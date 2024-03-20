@@ -8,9 +8,12 @@ readme = "README.rst"
 homepage = "https://github.com/MultifactorLab/aioldap3"
 repository = "https://github.com/MultifactorLab/aioldap3"
 include = [
-    "LICENSE",
+    "aioldap3.py"
 ]
 maintainers = ['MultifactorLab', 'Mastermind-U']
+packages = [
+    { include = "aioldap3.py", format = "sdist"},
+]
 
 [tool.poetry.dependencies]
 python = "^3.8.1"
@@ -35,9 +38,6 @@ pytest-asyncio = "^0.23.6"
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
-
-[tool.poetry.scripts]
-aioldap3 = ':aioldap3'
 
 [tool.isort]
 include_trailing_comma = true

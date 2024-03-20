@@ -661,7 +661,7 @@ python-versions = ">=3.8"
 [metadata]
 lock-version = "1.1"
 python-versions = "^3.8.1"
-content-hash = "ab551cf2673b20e19ad134ec0e491359aa1a65cf4183c5b66f6a34f88dc9020a"
+content-hash = "9d130093f03dd432ab085300206f060fe325247c658f879ef735ef944187b058"
 
 [metadata.files]
 astpretty = [

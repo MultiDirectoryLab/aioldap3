@@ -1,0 +1,2 @@
+[flake8]
+extend-ignore = G001, IF100

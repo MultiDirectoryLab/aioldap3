@@ -248,6 +248,7 @@ import logging
 import ssl
 from contextlib import suppress
 from copy import deepcopy
+from dataclasses import dataclass, field
 from types import TracebackType
 from typing import (
     Any,
@@ -259,6 +260,7 @@ from typing import (
     Tuple,
     Type,
     Union,
+    cast,
 )
 
 from ldap3.operation.add import add_operation
@@ -298,6 +300,10 @@ from ldap3.utils.conv import to_unicode
 from ldap3.utils.dn import safe_dn
 
 __all__ = [
+    "Server",
+    "LDAPResponse",
+    "LDAPClientProtocol",
+    "LDAPConnection",
     "LDAPException",
     "LDAPBindException",
     "LDAPStartTlsException",
@@ -307,11 +313,18 @@ __all__ = [
     "LDAPAddException",
     "LDAPExtendedException",
     "OperationNotSupported",
-    "Server",
-    "LDAPResponse",
-    "LDAPClientProtocol",
-    "LDAPConnection",
 ]
+
+logger = logging.getLogger('aioldap')
+
+EntryType = List[Dict[  # noqa: ECE001
+    str,
+    Union[
+        str,
+        bytes,
+        List[bytes],
+        Dict[str, List[bytes]],
+    ]]]
 
 
 class LDAPException(Exception):  # noqa: D100, D101
@@ -353,36 +366,33 @@ class OperationNotSupported(Exception):  # noqa: D100, D101
             f'This LDAP operation with code {code} is not supported')
 
 
-logger = logging.getLogger('aioldap')
+@dataclass(frozen=True)
+class SearchResut:
+    entries: EntryType
+    refs: List[Any]
+    pagination: Optional[bool]
 
 
+@dataclass
 class Server:
     """Server data container."""
 
-    def __init__(
-        self,
-        host: str,
-        port: int = 389,
-        use_ssl: bool = False,
-        ssl_context: Optional[ssl.SSLContext] = None,
-    ) -> None:
-        """Set server creds."""
-        self.host = host
-        self.port = port
-        self.use_ssl = use_ssl
+    host: str
+    port: int = 389
+    use_ssl: bool = False
+    ssl_context: Optional[ssl.SSLContext] = field(
+        default_factory=ssl.create_default_context)
 
-        if use_ssl and ssl_context:
-            self.ssl_ctx = ssl_context
-        elif use_ssl:
-            self.ssl_ctx = ssl.create_default_context()
-        else:
-            self.ssl_ctx = None  # type: ignore
+    def __post_init__(self) -> None:
+        """Set ssl context."""
+        self.ssl_context = self.ssl_context if self.use_ssl else None
 
 
 class LDAPResponse:
     """LDAPResponse container."""
 
-    data: Union[List[str], dict[str, Any]]
+    data: Dict[str, Any]
+    entries: EntryType
     exception: Optional[BaseException] = None
 
     def __init__(self, onfinish: Optional[Callable[[], None]] = None) -> None:
@@ -392,6 +402,7 @@ class LDAPResponse:
         self.finished = asyncio.Event()
         self.refs: List[Any] = []
         self.additional: Dict[str, Any] = {}
+        self.entries = []
 
     async def wait(self) -> None:
         """Wait for response."""
@@ -420,17 +431,17 @@ class LDAPClientProtocol(asyncio.Protocol):
         self.unprocessed = b''
         self.messages: List[bytes] = []
 
-        self.responses: Dict[Union[str, int], LDAPResponse] = {}
+        self.responses: Dict[int, LDAPResponse] = {}
 
     def send(self, msg: Sequence, unbind: bool = False) -> LDAPResponse:
         """Send LDAP message."""
-        msg_id: Union[str, int] = int(msg['messageID'])
+        msg_id: int = int(msg['messageID'])
 
         if unbind:
-            msg_id = 'unbind'
+            msg_id = -1
 
         response = LDAPResponse(
-            onfinish=lambda: self.remove_msg_id_response(msg_id))
+            onfinish=lambda: self._remove_msg_id_response(msg_id))
         self.responses[msg_id] = response
 
         payload = encode(msg)
@@ -444,7 +455,7 @@ class LDAPClientProtocol(asyncio.Protocol):
 
         return response
 
-    def remove_msg_id_response(self, msg_id: Union[str, int]) -> None:
+    def _remove_msg_id_response(self, msg_id: int) -> None:
         """Remove msg from responses."""
         with suppress(KeyError):
             del self.responses[msg_id]
@@ -468,140 +479,139 @@ class LDAPClientProtocol(asyncio.Protocol):
         logger.debug('data_received: len {0}'.format(len(data)))
         self.unprocessed += data
 
-        if len(data) > 0:
-            length = BaseStrategy.compute_ldap_message_size(self.unprocessed)
+        if len(data) <= 0:
+            return
+
+        length = BaseStrategy.compute_ldap_message_size(self.unprocessed)
+        logger.debug('data_received: msg_length {0}'.format(length))
+
+        while len(self.unprocessed) >= length != -1:
+            logger.debug(
+                'data_received: appended msg, '
+                'len: {0}'.format(len(self.unprocessed[:length])))
+            self.messages.append(self.unprocessed[:length])
+            self.unprocessed = self.unprocessed[length:]
+
+            length = BaseStrategy.compute_ldap_message_size(
+                self.unprocessed)
             logger.debug('data_received: msg_length {0}'.format(length))
 
-            while len(self.unprocessed) >= length != -1:
-                logger.debug(
-                    'data_received: appended msg, '
-                    'len: {0}'.format(len(self.unprocessed[:length])))
-                self.messages.append(self.unprocessed[:length])
-                self.unprocessed = self.unprocessed[length:]
+        while self.messages:
+            msg = self.messages.pop(0)
 
-                length = BaseStrategy.compute_ldap_message_size(
-                    self.unprocessed)
-                logger.debug('data_received: msg_length {0}'.format(length))
+            try:
+                msg_asn = decode_message_fast(msg)
+            except Exception as exc:
+                logger.warning(
+                    'data_received: Caught exception '
+                    'whilst decoding message {0}'.format(exc))
+                continue
+            msg_id = msg_asn['messageID']
+            logger.debug(
+                'data_received: Decoded message, id {0}'.format(msg_id))
+            is_list = False
+            finish = False
 
-            while self.messages:
-                msg = self.messages.pop(0)
+            msg_additional = {}
+            msg_refs = None
 
-                try:
-                    msg_asn = decode_message_fast(msg)
-                except Exception as exc:
-                    logger.warning(
-                        'data_received: Caught exception '
-                        'whilst decoding message {0}'.format(exc))
-                    continue
-                msg_id = msg_asn['messageID']
-                logger.debug(
-                    'data_received: Decoded message, id {0}'.format(msg_id))
-                is_list = False
-                finish = False
+            if msg_asn['protocolOp'] == 1:
+                # Bind request, only 1, finished after this
+                msg_data = bind_response_to_dict_fast(msg_asn['payload'])
+                msg_log = 'data_received: id {0}, bind'.format(msg_id)
+                finish = True
 
-                msg_additional = {}
-                msg_refs = None
+            elif msg_asn['protocolOp'] == 4:  # Search response, can be N,
+                is_list = True
+                msg_data = search_result_entry_response_to_dict_fast(
+                    msg_asn['payload'], None, None, False)
+                msg_log =\
+                    'data_received: id {0}, search response'.format(msg_id)
 
-                if msg_asn['protocolOp'] == 1:
-                    # Bind request, only 1, finished after this
-                    msg_data = bind_response_to_dict_fast(msg_asn['payload'])
-                    msg_log = 'data_received: id {0}, bind'.format(msg_id)
-                    finish = True
+            elif msg_asn['protocolOp'] == 5:  # Search result done
+                finish = True
+                msg_data = None  # Clear msg_data
 
-                elif msg_asn['protocolOp'] == 4:  # Search response, can be N,
-                    is_list = True
-                    msg_data = search_result_entry_response_to_dict_fast(
-                        msg_asn['payload'], None, None, False)
-                    msg_log =\
-                        'data_received: id {0}, search response'.format(msg_id)
+                # Get default doesnt work here
+                controls = msg_asn.get('controls')
+                if not controls:
+                    controls = []
 
-                elif msg_asn['protocolOp'] == 5:  # Search result done
-                    finish = True
-                    msg_data = None  # Clear msg_data
+                controls = [BaseStrategy.decode_control_fast(
+                    control[3]) for control in controls]
+                msg_additional = {
+                    'asn': msg_asn,
+                    'controls': {item[0]: item[1] for item in controls},
+                }
+                msg_log = \
+                    'data_received: id {0}, search done'.format(msg_id)
 
-                    # Get default doesnt work here
-                    controls = msg_asn.get('controls')
-                    if not controls:
-                        controls = []
+            # Modify response, could merge with 9,11
+            elif msg_asn['protocolOp'] == 7:
 
-                    controls = [BaseStrategy.decode_control_fast(
-                        control[3]) for control in controls]
-                    msg_additional = {
-                        'asn': msg_asn,
-                        'controls': {item[0]: item[1] for item in controls},
-                    }
-                    msg_log = \
-                        'data_received: id {0}, search done'.format(msg_id)
+                msg_data = ldap_result_to_dict_fast(msg_asn['payload'])
+                msg_log = \
+                    'data_received: id {0}, modify response'.format(msg_id)
+                finish = True
 
-                # Modify response, could merge with 9,11
-                elif msg_asn['protocolOp'] == 7:
+            elif msg_asn['protocolOp'] == 9:  # Add response
+                msg_data = ldap_result_to_dict_fast(msg_asn['payload'])
+                msg_log = \
+                    'data_received: id {0}, add response'.format(msg_id)
+                finish = True
 
-                    msg_data = ldap_result_to_dict_fast(msg_asn['payload'])
-                    msg_log = \
-                        'data_received: id {0}, modify response'.format(msg_id)
-                    finish = True
+            elif msg_asn['protocolOp'] == 11:  # Del response
+                msg_data = ldap_result_to_dict_fast(msg_asn['payload'])
+                msg_log = \
+                    'data_received: id {0}, del response'.format(msg_id)
+                finish = True
 
-                elif msg_asn['protocolOp'] == 9:  # Add response
-                    msg_data = ldap_result_to_dict_fast(msg_asn['payload'])
-                    msg_log = \
-                        'data_received: id {0}, add response'.format(msg_id)
-                    finish = True
+            elif msg_asn['protocolOp'] == 19:
+                msg_data = None
+                msg_refs = search_result_reference_response_to_dict_fast(
+                    msg_asn['payload'])
+                msg_log = \
+                    'data_received: id {0}, refs response'.format(msg_id)
 
-                elif msg_asn['protocolOp'] == 11:  # Del response
-                    msg_data = ldap_result_to_dict_fast(msg_asn['payload'])
-                    msg_log = \
-                        'data_received: id {0}, del response'.format(msg_id)
-                    finish = True
+            elif msg_asn['protocolOp'] == 24:
+                msg_data = extended_response_to_dict_fast(
+                    msg_asn['payload'])
+                msg_log = \
+                    'data_received: id {0}, extended response'.format(
+                        msg_id)
+                finish = True
+            else:
+                raise OperationNotSupported(msg_asn['protocolOp'])
 
-                elif msg_asn['protocolOp'] == 19:
-                    msg_data = None
-                    msg_refs = search_result_reference_response_to_dict_fast(
-                        msg_asn['payload'])
-                    msg_log = \
-                        'data_received: id {0}, refs response'.format(msg_id)
+            logger.debug(msg_log)
 
-                elif msg_asn['protocolOp'] == 24:
-                    msg_data = extended_response_to_dict_fast(
-                        msg_asn['payload'])
-                    msg_log = \
-                        'data_received: id {0}, extended response'.format(
-                            msg_id)
-                    finish = True
+            if msg_id not in self.responses:
+                # TODO raise some flags, this aint good
+                logger.warning(
+                    'data_received: unknown msg id {0}'.format(msg_id))
+                continue
+
+            # If we have data to store
+            if msg_data:
+                # If data is a singular item
+                if not is_list:
+                    self.responses[msg_id].data = msg_data
                 else:
-                    raise OperationNotSupported(msg_asn['protocolOp'])
+                    # If data is an element of a continiously expanding set
+                    self.responses[msg_id].entries.append(msg_data)
 
-                logger.debug(msg_log)
+            if msg_refs:
+                self.responses[msg_id].refs.append(msg_refs)
 
-                if msg_id not in self.responses:
-                    # TODO raise some flags, this aint good
-                    logger.warning(
-                        'data_received: unknown msg id {0}'.format(msg_id))
-                else:
-                    # If we have data to store
-                    if msg_data:
-                        # If data is a singular item
-                        if not is_list:
-                            self.responses[msg_id].data = msg_data
+            if msg_additional:
+                self.responses[msg_id].additional = msg_additional
 
-                        # If data is an element of a continiously expanding set
-                        else:
-                            if isinstance(self.responses[msg_id].data, list):
-                                self.responses[msg_id].data.append(msg_data)  # type: ignore  # noqa
-                            else:
-                                self.responses[msg_id].data = [msg_data]
-
-                    if msg_refs:
-                        self.responses[msg_id].refs.append(msg_refs)
-
-                    if msg_additional:
-                        self.responses[msg_id].additional = msg_additional
-
-                    # Mark request as done
-                    if finish:
-                        self.responses[msg_id].finished.set()
-                        logger.debug(
-                            'data_received: id {0}, marked finished'.format(
-                                msg_id))
+            # Mark request as done
+            if finish:
+                self.responses[msg_id].finished.set()
+                logger.debug(
+                    'data_received: id {0}, marked finished'.format(
+                        msg_id))
 
     def connection_lost(self, exc: Optional[Exception]) -> None:
         """Check if conn lost."""
@@ -669,6 +679,9 @@ class LDAPClientProtocol(asyncio.Protocol):
 class LDAPConnection:
     """Async connector."""
 
+    _proto: LDAPClientProtocol
+    _socket: asyncio.Transport
+
     def __init__(
         self,
         server: Server,
@@ -679,8 +692,6 @@ class LDAPConnection:
         """Set server, user and pw."""
         self._responses: Dict[str, LDAPResponse] = {}
         self._msg_id = 0
-        self._proto: LDAPClientProtocol = None  # type: ignore
-        self._socket = None
         self.loop = loop or asyncio.get_running_loop()
 
         self.server = server
@@ -708,7 +719,7 @@ class LDAPConnection:
 
     def close(self) -> None:
         """Close conn."""
-        if self._proto:
+        if hasattr(self, '_proto'):
             with suppress(Exception):
                 if self._proto._original_transport:
                     self._proto._original_transport.close()
@@ -717,12 +728,13 @@ class LDAPConnection:
                 if self._proto.transport:
                     self._proto.transport.close()
 
-        if self._socket is not None:
+        if hasattr(self, '_socket') is not None:
             with suppress(Exception):  # type: ignore
                 self._socket.close()
 
-        self._proto = None  # type: ignore
-        self._socket = None
+        with suppress(AttributeError):
+            del self._proto
+            del self._socket
 
     @property
     def _next_msg_id(self) -> int:
@@ -745,13 +757,13 @@ class LDAPConnection:
         :raises LDAPBindException: If credentials are invalid
         """
         # Create proto if its not created already
-        if self._proto is None or self._proto.transport.is_closing():
+        if not hasattr(self, '_proto') or self._proto.transport.is_closing():
             self._socket, self._proto =\
                 await self.loop.create_connection(  # type: ignore
                     lambda: LDAPClientProtocol(self.loop),
                     host=self.server.host,
                     port=self.server.port,
-                    ssl=self.server.ssl_ctx,
+                    ssl=self.server.ssl_context,
                 )
 
         if bind_dn is None:
@@ -816,7 +828,7 @@ class LDAPConnection:
         timeout: Optional[int] = None,
         get_operational_attributes: bool = False,
         page_size: int = 0,
-    ) -> Dict[str, Any]:
+    ) -> SearchResut:
         """Do search in DIT.
 
         :param str search_base: base DN
@@ -892,16 +904,11 @@ class LDAPConnection:
         except KeyError:
             cookie = None
 
-        if not isinstance(resp.data, list):
-            data = []
-        else:
-            data = resp.data
-
-        return {
-            'entries': data,
-            'refs': resp.refs,
-            'cookie': cookie,
-        }
+        return SearchResut(
+            entries=resp.entries,
+            refs=resp.refs,
+            pagination=cookie,
+        )
 
     async def paged_search(
         self,
@@ -952,7 +959,7 @@ class LDAPConnection:
         if not self.is_bound:
             raise LDAPBindException('Must be bound')
 
-        cookie = True  # True so loop runs once
+        cookie: Optional[bool] = True  # True so loop runs once
         while cookie is not None and cookie != b'':
             response = await self.search(
                 search_base,
@@ -974,10 +981,10 @@ class LDAPConnection:
                 cookie=None if cookie is True else cookie,
             )
 
-            while response['entries']:
-                yield response['entries'].pop()
+            while response.entries:
+                yield response.entries.pop()
 
-            cookie = response['cookie']
+            cookie = response.pagination
 
     async def unbind(self) -> None:
         """Unbind session.
@@ -1008,7 +1015,7 @@ class LDAPConnection:
 
     async def start_tls(self, ctx: Optional[ssl.SSLContext] = None) -> None:
         """Start tls protocol."""
-        if self._proto is None or self._proto.transport.is_closing():
+        if hasattr(self, '_proto') or self._proto.transport.is_closing():
             self._socket, self._proto =\
                 await self.loop.create_connection(  # type: ignore
                     lambda: LDAPClientProtocol(self.loop),
@@ -1017,7 +1024,6 @@ class LDAPConnection:
 
         # Get SSL context from server obj, if
         # it wasnt provided, it'll be the default one
-        ctx = ctx if ctx else self.server.ssl_ctx
 
         resp = await self.extended('1.3.6.1.4.1.1466.20037')
 
@@ -1026,7 +1032,8 @@ class LDAPConnection:
                 'Server doesnt want us to use TLS. {0}'.format(
                     resp.data.get('message')))
 
-        await self._proto.start_tls(ctx)
+        await self._proto.start_tls(
+            ctx or cast(ssl.SSLContext, self.server.ssl_context))
 
     async def extended(
         self,

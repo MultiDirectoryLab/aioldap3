@@ -367,7 +367,7 @@ class OperationNotSupported(Exception):  # noqa: D100, D101
 
 
 @dataclass(frozen=True)
-class SearchResut:
+class SearchResult:
     entries: EntryType
     refs: List[Any]
     pagination: Optional[bool]
@@ -828,7 +828,7 @@ class LDAPConnection:
         timeout: Optional[int] = None,
         get_operational_attributes: bool = False,
         page_size: int = 0,
-    ) -> SearchResut:
+    ) -> SearchResult:
         """Do search in DIT.
 
         :param str search_base: base DN
@@ -857,7 +857,8 @@ class LDAPConnection:
         if not self.is_bound:
             raise LDAPBindException('Must be bound')
 
-        search_base = safe_dn(search_base)
+        if search_base:
+            search_base = safe_dn(search_base)
 
         if not attributes:
             attributes = ['1.1']
@@ -904,7 +905,7 @@ class LDAPConnection:
         except KeyError:
             cookie = None
 
-        return SearchResut(
+        return SearchResult(
             entries=resp.entries,
             refs=resp.refs,
             pagination=cookie,
@@ -1234,3 +1235,9 @@ class LDAPConnection:
     def is_bound(self) -> bool:
         """Check if bound."""
         return self._proto is not None and self._proto.is_bound
+
+    async def get_info(self) -> Tuple[SearchResult, SearchResult]:
+        return await asyncio.gather(
+            self.search('', '(objectClass=*)', search_scope='BASE', attributes='*'),
+            self.search('cn=Subschema', '(objectClass=subschema)', get_operational_attributes=True),
+        )

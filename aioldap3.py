@@ -1236,8 +1236,8 @@ class LDAPConnection:
         """Check if bound."""
         return self._proto is not None and self._proto.is_bound
 
-    async def get_info(self) -> Tuple[SearchResult, SearchResult]:
-        return await asyncio.gather(
-            self.search('', '(objectClass=*)', search_scope='BASE', attributes='*'),
-            self.search('cn=Subschema', '(objectClass=subschema)', get_operational_attributes=True),
-        )
+    async def get_root_dse(self) -> SearchResult:
+        """Get rootDSE from server."""
+        return await self.search(
+            '', '(objectClass=*)',
+            search_scope='BASE', attributes='*')

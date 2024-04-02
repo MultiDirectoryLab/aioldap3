@@ -256,6 +256,7 @@ from typing import (
     Callable,
     Dict,
     List,
+    Literal,
     Optional,
     Tuple,
     Type,
@@ -264,7 +265,7 @@ from typing import (
 )
 
 from ldap3.operation.add import add_operation
-from ldap3.operation.bind import bind_response_to_dict_fast
+from ldap3.operation.bind import bind_operation, bind_response_to_dict_fast
 from ldap3.operation.delete import delete_operation
 from ldap3.operation.extended import (
     extended_operation,
@@ -298,6 +299,7 @@ from ldap3.utils.asn1 import (
 )
 from ldap3.utils.conv import to_unicode
 from ldap3.utils.dn import safe_dn
+from ldap3.utils.ntlm import NtlmClient
 
 __all__ = [
     "Server",
@@ -382,6 +384,7 @@ class Server:
     use_ssl: bool = False
     ssl_context: Optional[ssl.SSLContext] = field(
         default_factory=ssl.create_default_context)
+    version: Literal[2, 3] = 3
 
     def __post_init__(self) -> None:
         """Set ssl context."""
@@ -745,6 +748,7 @@ class LDAPConnection:
         self,
         bind_dn: Optional[str] = None,
         bind_pw: Optional[str] = None,
+        method: Literal['ANONYMOUS', 'SIMPLE', 'SASL', 'NTLM'] = 'SIMPLE',
     ) -> None:
         """Bind to LDAP server.
 
@@ -779,11 +783,24 @@ class LDAPConnection:
         # TODO check if already bound
 
         # Create bind packet
-        bind_req = BindRequest()
-        bind_req['version'] = Version(3)
-        bind_req['name'] = bind_dn
-        bind_req['authentication'] = AuthenticationChoice().\
-            setComponentByName('simple', Simple(bind_pw))
+        if method == 'SIMPLE':
+            bind_req = BindRequest()
+            bind_req['version'] = Version(3)
+            bind_req['name'] = bind_dn
+            bind_req['authentication'] = AuthenticationChoice().\
+                setComponentByName('simple', Simple(bind_pw))
+
+        elif method == 'NTLM':
+            domain_name, user_name = bind_dn.split('\\', 1)
+            ntlm_client = NtlmClient(domain_name, user_name, bind_pw)
+
+            # as per https://msdn.microsoft.com/en-us/library/cc223501.aspx
+            # send a sicilyPackageDiscovery request (in the bindRequest)
+            bind_req = bind_operation(
+                self.server.version, 'SICILY_PACKAGE_DISCOVERY', ntlm_client)
+
+        else:
+            raise LDAPBindException('Unsupported Authentication Method')
 
         # As were binding, msg ID should be 1
         self._msg_id = 0

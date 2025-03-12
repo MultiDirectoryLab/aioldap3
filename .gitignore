@@ -64,3 +64,4 @@ target/
 misc/
 .pytest_cache/
 htmlcov/
+.vscode/

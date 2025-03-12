@@ -45,8 +45,55 @@ Simple example of using aioboto3 to put items into a dynamodb table
     )
 
     # Now search for user
-    async for user in conn.search(dn, search_filter='(uid=*)', search_scope='BASE', attributes='*'):
+    async for user in conn.search(
+        dn,
+        search_filter='(uid=*)',
+        search_scope='BASE',
+        attributes='*'
+    ):
         assert user['dn'] == dn
+
+
+Equivalent ldap3 code
+
+.. code-block:: python
+
+    import asyncio
+    import ldap3
+    import aioldap3
+
+    USER = "User0"
+    PASSWORD = "SomePassword"
+    HOST = "ldaps://localhost"
+
+
+    async def sync_aioldap3() -> None:
+        conn = aioldap3.LDAPConnection(aioldap3.Server(HOST), USER, PASSWORD)
+
+        await conn.bind(method="SIMPLE")
+        print(await conn.whoami())
+        print(await conn.get_root_dse())
+
+
+    def sync_ldap3() -> None:
+        server = ldap3.Server(HOST, get_info="ALL")
+        conn = ldap3.Connection(
+            server,
+            user=USER,
+            password=PASSWORD,
+            authentication="SIMPLE",
+        )
+        conn.bind()
+        print(server.schema)
+
+
+    def main() -> None:
+        asyncio.run(sync_aioldap3())
+        sync_ldap3()
+
+
+    if __name__ == "__main__":
+        main()
 
 
 Credits

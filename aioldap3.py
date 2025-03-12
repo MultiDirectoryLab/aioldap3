@@ -713,7 +713,7 @@ class LDAPConnection:
                     self._proto.transport.close()
 
         if hasattr(self, "_socket") is not None:
-            with suppress(Exception):  # type: ignore
+            with suppress(Exception):
                 self._socket.close()
 
         with suppress(AttributeError):
@@ -743,7 +743,7 @@ class LDAPConnection:
         """
         # Create proto if its not created already
         if not hasattr(self, "_proto") or self._proto.transport.is_closing():
-            self._socket, self._proto = await self.loop.create_connection(  # type: ignore
+            self._socket, self._proto = await self.loop.create_connection(
                 lambda: LDAPClientProtocol(self.loop),
                 host=self.server.host,
                 port=self.server.port,
@@ -769,7 +769,8 @@ class LDAPConnection:
             bind_req["name"] = bind_dn
             bind_req["authentication"] = (
                 AuthenticationChoice().setComponentByName(
-                    "simple", Simple(bind_pw)
+                    "simple",
+                    Simple(bind_pw),
                 )
             )
 
@@ -780,7 +781,9 @@ class LDAPConnection:
             # as per https://msdn.microsoft.com/en-us/library/cc223501.aspx
             # send a sicilyPackageDiscovery request (in the bindRequest)
             bind_req = bind_operation(
-                self.server.version, "SICILY_PACKAGE_DISCOVERY", ntlm_client
+                self.server.version,
+                "SICILY_PACKAGE_DISCOVERY",
+                ntlm_client,
             )
 
         else:
@@ -804,7 +807,7 @@ class LDAPConnection:
         await resp.wait()  # TODO wrap with timeout
 
         # If the result is non-zero for a bind, we got some invalid creds yo
-        if resp.data["result"] != 0:  # type: ignore
+        if resp.data["result"] != 0:
             raise LDAPBindError("Invalid Credentials")
 
         # Ok we got success, this is used
@@ -1025,7 +1028,7 @@ class LDAPConnection:
     async def start_tls(self, ctx: ssl.SSLContext | None = None) -> None:
         """Start tls protocol."""
         if hasattr(self, "_proto") or self._proto.transport.is_closing():
-            self._socket, self._proto = await self.loop.create_connection(  # type: ignore
+            self._socket, self._proto = await self.loop.create_connection(
                 lambda: LDAPClientProtocol(self.loop),
                 self.server.host,
                 self.server.port,

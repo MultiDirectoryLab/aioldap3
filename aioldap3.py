@@ -240,7 +240,10 @@ Example:
     async for user in conn.search(
             dn, search_filter='(uid=*)', search_scope='BASE', attributes='*'):
         assert user['dn'] == dn
+
 """
+
+from __future__ import annotations
 
 import asyncio
 import asyncio.sslproto
@@ -250,19 +253,7 @@ from contextlib import suppress
 from copy import deepcopy
 from dataclasses import dataclass, field
 from types import TracebackType
-from typing import (
-    Any,
-    AsyncGenerator,
-    Callable,
-    Dict,
-    List,
-    Literal,
-    Optional,
-    Tuple,
-    Type,
-    Union,
-    cast,
-)
+from typing import Any, AsyncGenerator, Callable, Literal, cast
 
 from ldap3.operation.add import add_operation
 from ldap3.operation.bind import bind_operation, bind_response_to_dict_fast
@@ -306,73 +297,67 @@ __all__ = [
     "LDAPResponse",
     "LDAPClientProtocol",
     "LDAPConnection",
-    "LDAPException",
-    "LDAPBindException",
-    "LDAPStartTlsException",
-    "LDAPChangeException",
-    "LDAPModifyException",
-    "LDAPDeleteException",
-    "LDAPAddException",
-    "LDAPExtendedException",
-    "OperationNotSupported",
+    "LDAPError",
+    "LDAPBindError",
+    "LDAPStartTlsError",
+    "LDAPChangeError",
+    "LDAPModifyError",
+    "LDAPDeleteError",
+    "LDAPAddError",
+    "LDAPExtendedError",
+    "OperationNotSupportedError",
 ]
 
-logger = logging.getLogger('aioldap')
+logger = logging.getLogger("aioldap")
 
-EntryType = List[Dict[  # noqa: ECE001
-    str,
-    Union[
-        str,
-        bytes,
-        List[bytes],
-        Dict[str, List[bytes]],
-    ]]]
+EntryType = list[dict[str, str | bytes | list[bytes] | dict[str, list[bytes]]]]
 
 
-class LDAPException(Exception):  # noqa: D100, D101
+class LDAPError(Exception):  # noqa: D101
     pass
 
 
-class LDAPBindException(LDAPException):  # noqa: D100, D101
+class LDAPBindError(LDAPError):  # noqa: D101
     pass
 
 
-class LDAPStartTlsException(LDAPException):  # noqa: D100, D101
+class LDAPStartTlsError(LDAPError):  # noqa: D101
     pass
 
 
-class LDAPChangeException(LDAPException):  # noqa: D100, D101
+class LDAPChangeError(LDAPError):  # noqa: D101
     pass
 
 
-class LDAPModifyException(LDAPException):  # noqa: D100, D101
+class LDAPModifyError(LDAPError):  # noqa: D101
     pass
 
 
-class LDAPDeleteException(LDAPException):  # noqa: D100, D101
+class LDAPDeleteError(LDAPError):  # noqa: D101
     pass
 
 
-class LDAPAddException(LDAPException):  # noqa: D100, D101
+class LDAPAddError(LDAPError):  # noqa: D101
     pass
 
 
-class LDAPExtendedException(LDAPException):  # noqa: D100, D101
+class LDAPExtendedError(LDAPError):  # noqa: D101
     pass
 
 
-class OperationNotSupported(Exception):  # noqa: D100, D101
-    def __init__(self, code: Union[str, int]) -> None:
+class OperationNotSupportedError(Exception):  # noqa: D101
+    def __init__(self, code: str | int) -> None:
         """Set a new message."""
         super().__init__(
-            f'This LDAP operation with code {code} is not supported')
+            f"This LDAP operation with code {code} is not supported"
+        )
 
 
 @dataclass(frozen=True)
 class SearchResult:
     entries: EntryType
-    refs: List[Any]
-    pagination: Optional[bool]
+    refs: list[Any]
+    pagination: bool | None
 
 
 @dataclass
@@ -382,8 +367,9 @@ class Server:
     host: str
     port: int = 389
     use_ssl: bool = False
-    ssl_context: Optional[ssl.SSLContext] = field(
-        default_factory=ssl.create_default_context)
+    ssl_context: ssl.SSLContext | None = field(
+        default_factory=ssl.create_default_context
+    )
     version: Literal[2, 3] = 3
 
     def __post_init__(self) -> None:
@@ -394,17 +380,17 @@ class Server:
 class LDAPResponse:
     """LDAPResponse container."""
 
-    data: Dict[str, Any]
+    data: dict[str, Any]
     entries: EntryType
-    exception: Optional[BaseException] = None
+    exception: BaseException | None = None
 
-    def __init__(self, onfinish: Optional[Callable[[], None]] = None) -> None:
+    def __init__(self, onfinish: Callable[[], None] | None = None) -> None:
         """Set callback."""
         self._onfinish = onfinish
         self.started = asyncio.Event()
         self.finished = asyncio.Event()
-        self.refs: List[Any] = []
-        self.additional: Dict[str, Any] = {}
+        self.refs: list[Any] = []
+        self.additional: dict[str, Any] = {}
         self.entries = []
 
     async def wait(self) -> None:
@@ -431,29 +417,30 @@ class LDAPClientProtocol(asyncio.Protocol):
         self._tls_event = asyncio.Event()
         self._is_bound = False
 
-        self.unprocessed = b''
-        self.messages: List[bytes] = []
+        self.unprocessed = b""
+        self.messages: list[bytes] = []
 
-        self.responses: Dict[int, LDAPResponse] = {}
+        self.responses: dict[int, LDAPResponse] = {}
 
     def send(self, msg: Sequence, unbind: bool = False) -> LDAPResponse:
         """Send LDAP message."""
-        msg_id: int = int(msg['messageID'])
+        msg_id: int = int(msg["messageID"])
 
         if unbind:
             msg_id = -1
 
         response = LDAPResponse(
-            onfinish=lambda: self._remove_msg_id_response(msg_id))
+            onfinish=lambda: self._remove_msg_id_response(msg_id)
+        )
         self.responses[msg_id] = response
 
         payload = encode(msg)
 
-        logger.debug('Sending request id {0}'.format(msg_id))
+        logger.debug(f"Sending request id {msg_id}")
 
         self.transport.write(payload)
 
-        logger.debug('Sent request id {0}'.format(msg_id))
+        logger.debug(f"Sent request id {msg_id}")
         response.started.set()
 
         return response
@@ -475,29 +462,29 @@ class LDAPClientProtocol(asyncio.Protocol):
         """Check if conn meet eof."""
         if self._using_tls:
             return False
-        return super(LDAPClientProtocol, self).eof_received()  # type: ignore
+        return super().eof_received()  # type: ignore
 
-    def data_received(self, data: bytes) -> None:
+    def data_received(self, data: bytes) -> None:  # TODO: decompose
         """Check if message is full."""
-        logger.debug('data_received: len {0}'.format(len(data)))
+        logger.debug(f"data_received: len {len(data)}")
         self.unprocessed += data
 
         if len(data) <= 0:
             return
 
         length = BaseStrategy.compute_ldap_message_size(self.unprocessed)
-        logger.debug('data_received: msg_length {0}'.format(length))
+        logger.debug(f"data_received: msg_length {length}")
 
         while len(self.unprocessed) >= length != -1:
             logger.debug(
-                'data_received: appended msg, '
-                'len: {0}'.format(len(self.unprocessed[:length])))
+                "data_received: appended msg, "
+                f"len: {len(self.unprocessed[:length])}"
+            )
             self.messages.append(self.unprocessed[:length])
             self.unprocessed = self.unprocessed[length:]
 
-            length = BaseStrategy.compute_ldap_message_size(
-                self.unprocessed)
-            logger.debug('data_received: msg_length {0}'.format(length))
+            length = BaseStrategy.compute_ldap_message_size(self.unprocessed)
+            logger.debug(f"data_received: msg_length {length}")
 
         while self.messages:
             msg = self.messages.pop(0)
@@ -506,92 +493,85 @@ class LDAPClientProtocol(asyncio.Protocol):
                 msg_asn = decode_message_fast(msg)
             except Exception as exc:
                 logger.warning(
-                    'data_received: Caught exception '
-                    'whilst decoding message {0}'.format(exc))
+                    "data_received: Caught exception "
+                    f"whilst decoding message {exc}"
+                )
                 continue
-            msg_id = msg_asn['messageID']
-            logger.debug(
-                'data_received: Decoded message, id {0}'.format(msg_id))
+            msg_id = msg_asn["messageID"]
+            logger.debug(f"data_received: Decoded message, id {msg_id}")
             is_list = False
             finish = False
 
             msg_additional = {}
             msg_refs = None
 
-            if msg_asn['protocolOp'] == 1:
+            if msg_asn["protocolOp"] == 1:
                 # Bind request, only 1, finished after this
-                msg_data = bind_response_to_dict_fast(msg_asn['payload'])
-                msg_log = 'data_received: id {0}, bind'.format(msg_id)
+                msg_data = bind_response_to_dict_fast(msg_asn["payload"])
+                msg_log = f"data_received: id {msg_id}, bind"
                 finish = True
 
-            elif msg_asn['protocolOp'] == 4:  # Search response, can be N,
+            elif msg_asn["protocolOp"] == 4:  # Search response, can be N,
                 is_list = True
                 msg_data = search_result_entry_response_to_dict_fast(
-                    msg_asn['payload'], None, None, False)
-                msg_log =\
-                    'data_received: id {0}, search response'.format(msg_id)
+                    msg_asn["payload"], None, None, False
+                )
+                msg_log = f"data_received: id {msg_id}, search response"
 
-            elif msg_asn['protocolOp'] == 5:  # Search result done
+            elif msg_asn["protocolOp"] == 5:  # Search result done
                 finish = True
                 msg_data = None  # Clear msg_data
 
                 # Get default doesnt work here
-                controls = msg_asn.get('controls')
+                controls = msg_asn.get("controls")
                 if not controls:
                     controls = []
 
-                controls = [BaseStrategy.decode_control_fast(
-                    control[3]) for control in controls]
+                controls = [
+                    BaseStrategy.decode_control_fast(control[3])
+                    for control in controls
+                ]
                 msg_additional = {
-                    'asn': msg_asn,
-                    'controls': {item[0]: item[1] for item in controls},
+                    "asn": msg_asn,
+                    "controls": {item[0]: item[1] for item in controls},
                 }
-                msg_log = \
-                    'data_received: id {0}, search done'.format(msg_id)
+                msg_log = f"data_received: id {msg_id}, search done"
 
             # Modify response, could merge with 9,11
-            elif msg_asn['protocolOp'] == 7:
-
-                msg_data = ldap_result_to_dict_fast(msg_asn['payload'])
-                msg_log = \
-                    'data_received: id {0}, modify response'.format(msg_id)
+            elif msg_asn["protocolOp"] == 7:
+                msg_data = ldap_result_to_dict_fast(msg_asn["payload"])
+                msg_log = f"data_received: id {msg_id}, modify response"
                 finish = True
 
-            elif msg_asn['protocolOp'] == 9:  # Add response
-                msg_data = ldap_result_to_dict_fast(msg_asn['payload'])
-                msg_log = \
-                    'data_received: id {0}, add response'.format(msg_id)
+            elif msg_asn["protocolOp"] == 9:  # Add response
+                msg_data = ldap_result_to_dict_fast(msg_asn["payload"])
+                msg_log = f"data_received: id {msg_id}, add response"
                 finish = True
 
-            elif msg_asn['protocolOp'] == 11:  # Del response
-                msg_data = ldap_result_to_dict_fast(msg_asn['payload'])
-                msg_log = \
-                    'data_received: id {0}, del response'.format(msg_id)
+            elif msg_asn["protocolOp"] == 11:  # Del response
+                msg_data = ldap_result_to_dict_fast(msg_asn["payload"])
+                msg_log = f"data_received: id {msg_id}, del response"
                 finish = True
 
-            elif msg_asn['protocolOp'] == 19:
+            elif msg_asn["protocolOp"] == 19:
                 msg_data = None
                 msg_refs = search_result_reference_response_to_dict_fast(
-                    msg_asn['payload'])
-                msg_log = \
-                    'data_received: id {0}, refs response'.format(msg_id)
+                    msg_asn["payload"]
+                )
+                msg_log = f"data_received: id {msg_id}, refs response"
 
-            elif msg_asn['protocolOp'] == 24:
-                msg_data = extended_response_to_dict_fast(
-                    msg_asn['payload'])
-                msg_log = \
-                    'data_received: id {0}, extended response'.format(
-                        msg_id)
+            elif msg_asn["protocolOp"] == 24:
+                msg_data = extended_response_to_dict_fast(msg_asn["payload"])
+                msg_log = f"data_received: id {msg_id}, extended response"
                 finish = True
             else:
-                raise OperationNotSupported(msg_asn['protocolOp'])
+                raise OperationNotSupportedError(msg_asn["protocolOp"])
 
             logger.debug(msg_log)
 
             if msg_id not in self.responses:
                 # TODO raise some flags, this aint good
-                logger.warning(
-                    'data_received: unknown msg id {0}'.format(msg_id))
+                logger.warning(f"data_received: unknown msg id {msg_id}")
                 continue
 
             # If we have data to store
@@ -612,19 +592,18 @@ class LDAPClientProtocol(asyncio.Protocol):
             # Mark request as done
             if finish:
                 self.responses[msg_id].finished.set()
-                logger.debug(
-                    'data_received: id {0}, marked finished'.format(
-                        msg_id))
+                logger.debug(f"data_received: id {msg_id}, marked finished")
 
-    def connection_lost(self, exc: Optional[Exception]) -> None:
+    def connection_lost(self, exc: Exception | None) -> None:
         """Check if conn lost."""
-        logger.debug('Connection lost')
+        logger.debug("Connection lost")
 
         self._is_bound = False
         for key, response in self.responses.items():
-            if key != 'unbind':
+            if key != "unbind":
                 response.exception = ConnectionResetError(
-                    'LDAP Server dropped the connection')
+                    "LDAP Server dropped the connection"
+                )
             response.finished.set()
 
         if self._original_transport is not None:
@@ -663,18 +642,20 @@ class LDAPClientProtocol(asyncio.Protocol):
     @staticmethod
     def encapsulate_ldap_message(
         message_id: int,
-        obj_name: str, obj: str,
-        controls: Optional[List[str]] = None,
+        obj_name: str,
+        obj: str,
+        controls: list[str] | None = None,
     ) -> LDAPMessage:
         """Create LDAP message."""
         ldap_message = LDAPMessage()
-        ldap_message['messageID'] = MessageID(message_id)
-        ldap_message['protocolOp'] = ProtocolOp().setComponentByName(
-            obj_name, obj)
+        ldap_message["messageID"] = MessageID(message_id)
+        ldap_message["protocolOp"] = ProtocolOp().setComponentByName(
+            obj_name, obj
+        )
 
         msg_controls = build_controls_list(controls)
         if msg_controls:
-            ldap_message['controls'] = msg_controls
+            ldap_message["controls"] = msg_controls
 
         return ldap_message
 
@@ -688,12 +669,12 @@ class LDAPConnection:
     def __init__(
         self,
         server: Server,
-        user: Optional[str] = None,
-        password: Optional[str] = None,
-        loop: Optional[asyncio.AbstractEventLoop] = None,
+        user: str | None = None,
+        password: str | None = None,
+        loop: asyncio.AbstractEventLoop | None = None,
     ) -> None:
         """Set server, user and pw."""
-        self._responses: Dict[str, LDAPResponse] = {}
+        self._responses: dict[str, LDAPResponse] = {}
         self._msg_id = 0
         self.loop = loop or asyncio.get_running_loop()
 
@@ -701,16 +682,16 @@ class LDAPConnection:
         self.bind_dn = user
         self.bind_pw = password
 
-    async def __aenter__(self) -> 'LDAPConnection':
+    async def __aenter__(self) -> LDAPConnection:
         """Do autobind."""
         await self.bind()
         return self
 
     async def __aexit__(
         self,
-        exc_type: Optional[Type[BaseException]],
-        exc: Optional[BaseException],
-        tb: Optional[TracebackType],
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
     ) -> None:
         """Do unbind."""
         await self.unbind()
@@ -722,7 +703,7 @@ class LDAPConnection:
 
     def close(self) -> None:
         """Close conn."""
-        if hasattr(self, '_proto'):
+        if hasattr(self, "_proto"):
             with suppress(Exception):
                 if self._proto._original_transport:
                     self._proto._original_transport.close()
@@ -731,7 +712,7 @@ class LDAPConnection:
                 if self._proto.transport:
                     self._proto.transport.close()
 
-        if hasattr(self, '_socket') is not None:
+        if hasattr(self, "_socket") is not None:
             with suppress(Exception):  # type: ignore
                 self._socket.close()
 
@@ -746,9 +727,9 @@ class LDAPConnection:
 
     async def bind(
         self,
-        bind_dn: Optional[str] = None,
-        bind_pw: Optional[str] = None,
-        method: Literal['ANONYMOUS', 'SIMPLE', 'SASL', 'NTLM'] = 'SIMPLE',
+        bind_dn: str | None = None,
+        bind_pw: str | None = None,
+        method: Literal["ANONYMOUS", "SIMPLE", "SASL", "NTLM"] = "SIMPLE",
     ) -> None:
         """Bind to LDAP server.
 
@@ -758,17 +739,16 @@ class LDAPConnection:
         :param bind_pw: Bind password
         :param host: LDAP Host
         :param port: LDAP Port
-        :raises LDAPBindException: If credentials are invalid
+        :raises LDAPBindError: If credentials are invalid
         """
         # Create proto if its not created already
-        if not hasattr(self, '_proto') or self._proto.transport.is_closing():
-            self._socket, self._proto =\
-                await self.loop.create_connection(  # type: ignore
-                    lambda: LDAPClientProtocol(self.loop),
-                    host=self.server.host,
-                    port=self.server.port,
-                    ssl=self.server.ssl_context,
-                )
+        if not hasattr(self, "_proto") or self._proto.transport.is_closing():
+            self._socket, self._proto = await self.loop.create_connection(  # type: ignore
+                lambda: LDAPClientProtocol(self.loop),
+                host=self.server.host,
+                port=self.server.port,
+                ssl=self.server.ssl_context,
+            )
 
         if bind_dn is None:
             bind_dn = self.bind_dn
@@ -777,30 +757,34 @@ class LDAPConnection:
 
         # If bind_dn is still None or '' then set up for anon bind
         if not bind_dn:
-            bind_dn = ''
-            bind_pw = ''
+            bind_dn = ""
+            bind_pw = ""
 
         # TODO check if already bound
 
         # Create bind packet
-        if method == 'SIMPLE':
+        if method == "SIMPLE":
             bind_req = BindRequest()
-            bind_req['version'] = Version(3)
-            bind_req['name'] = bind_dn
-            bind_req['authentication'] = AuthenticationChoice().\
-                setComponentByName('simple', Simple(bind_pw))
+            bind_req["version"] = Version(3)
+            bind_req["name"] = bind_dn
+            bind_req["authentication"] = (
+                AuthenticationChoice().setComponentByName(
+                    "simple", Simple(bind_pw)
+                )
+            )
 
-        elif method == 'NTLM':
-            domain_name, user_name = bind_dn.split('\\', 1)
+        elif method == "NTLM":
+            domain_name, user_name = bind_dn.split("\\", 1)
             ntlm_client = NtlmClient(domain_name, user_name, bind_pw)
 
             # as per https://msdn.microsoft.com/en-us/library/cc223501.aspx
             # send a sicilyPackageDiscovery request (in the bindRequest)
             bind_req = bind_operation(
-                self.server.version, 'SICILY_PACKAGE_DISCOVERY', ntlm_client)
+                self.server.version, "SICILY_PACKAGE_DISCOVERY", ntlm_client
+            )
 
         else:
-            raise LDAPBindException('Unsupported Authentication Method')
+            raise LDAPBindError("Unsupported Authentication Method")
 
         # As were binding, msg ID should be 1
         self._msg_id = 0
@@ -810,7 +794,8 @@ class LDAPConnection:
 
         # Generate ASN1 form of LDAP bind request
         ldap_msg = LDAPClientProtocol.encapsulate_ldap_message(
-            msg_id, 'bindRequest', bind_req)
+            msg_id, "bindRequest", bind_req
+        )
 
         # Send request to LDAP server, as multiple LDAP queries
         # can run simultaneously, were given an object to wait on
@@ -819,8 +804,8 @@ class LDAPConnection:
         await resp.wait()  # TODO wrap with timeout
 
         # If the result is non-zero for a bind, we got some invalid creds yo
-        if resp.data['result'] != 0:  # type: ignore
-            raise LDAPBindException("Invalid Credentials")
+        if resp.data["result"] != 0:  # type: ignore
+            raise LDAPBindError("Invalid Credentials")
 
         # Ok we got success, this is used
         # in other places as a guard if your not bound
@@ -830,19 +815,19 @@ class LDAPConnection:
         self,
         search_base: str,
         search_filter: str,
-        search_scope: str = 'SUBTREE',
-        dereference_aliases: str = 'ALWAYS',
-        attributes: Optional[Union[str, List[str]]] = None,
+        search_scope: str = "SUBTREE",
+        dereference_aliases: str = "ALWAYS",
+        attributes: str | list[str] | None = None,
         size_limit: int = 0,
         time_limit: int = 0,
         types_only: bool = False,
         auto_escape: bool = True,
         auto_encode: bool = True,
-        schema: Optional[SchemaInfo] = None,
-        validator: Optional[Callable[[str], bool]] = None,
+        schema: SchemaInfo | None = None,
+        validator: Callable[[str], bool] | None = None,
         check_names: bool = False,
-        cookie: Optional[bool] = None,
-        timeout: Optional[int] = None,
+        cookie: bool | None = None,
+        timeout: int | None = None,
         get_operational_attributes: bool = False,
         page_size: int = 0,
     ) -> SearchResult:
@@ -868,24 +853,24 @@ class LDAPConnection:
             request timeout on client side, defaults to None
         :param bool get_operational_attributes: defaults to False
         :param int page_size: defaults to 0
-        :raises LDAPBindException: on invalid creds
+        :raises LDAPBindError: on invalid creds
         :return Dict[str, Any]: search result.
         """
         if not self.is_bound:
-            raise LDAPBindException('Must be bound')
+            raise LDAPBindError("Must be bound")
 
         if search_base:
             search_base = safe_dn(search_base)
 
         if not attributes:
-            attributes = ['1.1']
-        elif attributes == '*':
-            attributes = ['*']
+            attributes = ["1.1"]
+        elif attributes == "*":
+            attributes = ["*"]
         if isinstance(attributes, str):
             attributes = [attributes]
 
         if get_operational_attributes and isinstance(attributes, list):
-            attributes.append('+')
+            attributes.append("+")
 
         controls = []
         if page_size:
@@ -898,16 +883,20 @@ class LDAPConnection:
             search_filter,
             search_scope,
             dereference_aliases,
-            attributes, size_limit,
-            time_limit, types_only,
+            attributes,
+            size_limit,
+            time_limit,
+            types_only,
             auto_escape=auto_escape,
             auto_encode=auto_encode,
-            schema=schema, validator=validator,
+            schema=schema,
+            validator=validator,
             check_names=check_names,
         )
 
         ldap_msg = LDAPClientProtocol.encapsulate_ldap_message(
-            self._next_msg_id, 'searchRequest', search_req, controls=controls)
+            self._next_msg_id, "searchRequest", search_req, controls=controls
+        )
 
         resp = self._proto.send(ldap_msg)
 
@@ -917,8 +906,9 @@ class LDAPConnection:
             await resp.wait()
 
         try:
-            cookie = resp.additional['controls'][
-                '1.2.840.113556.1.4.319']['value']['cookie']
+            cookie = resp.additional["controls"]["1.2.840.113556.1.4.319"][
+                "value"
+            ]["cookie"]
         except KeyError:
             cookie = None
 
@@ -932,21 +922,21 @@ class LDAPConnection:
         self,
         search_base: str,
         search_filter: str,
-        search_scope: str = 'SUBTREE',
-        dereference_aliases: str = 'ALWAYS',
-        attributes: Optional[Union[str, List[str]]] = None,
+        search_scope: str = "SUBTREE",
+        dereference_aliases: str = "ALWAYS",
+        attributes: str | list[str] | None = None,
         size_limit: int = 0,
         time_limit: int = 0,
         types_only: bool = False,
         auto_escape: bool = True,
         auto_encode: bool = True,
         schema: SchemaInfo = None,
-        validator: Optional[Callable[[str], bool]] = None,
+        validator: Callable[[str], bool] | None = None,
         check_names: bool = False,
-        timeout: Optional[int] = None,
+        timeout: int | None = None,
         get_operational_attributes: bool = False,
         page_size: int = 500,
-    ) -> AsyncGenerator[Dict[str, Any], None]:
+    ) -> AsyncGenerator[dict[str, Any], None]:
         """Paginate search.
 
         Do search in DIT.
@@ -971,14 +961,14 @@ class LDAPConnection:
             request timeout on client side, defaults to None
         :param bool get_operational_attributes: defaults to False
         :param int page_size: defaults to 0
-        :raises LDAPBindException: on invalid creds
+        :raises LDAPBindError: on invalid creds
         :return Dict[str, Any]: search result.
         """
         if not self.is_bound:
-            raise LDAPBindException('Must be bound')
+            raise LDAPBindError("Must be bound")
 
-        cookie: Optional[bool] = True  # True so loop runs once
-        while cookie is not None and cookie != b'':
+        cookie: bool | None = True  # True so loop runs once
+        while cookie is not None and cookie != b"":
             response = await self.search(
                 search_base,
                 search_filter,
@@ -1022,7 +1012,8 @@ class LDAPConnection:
 
         # Generate final LDAP ASN message
         ldap_msg = LDAPClientProtocol.encapsulate_ldap_message(
-            msg_id, 'unbindRequest', unbind_req)
+            msg_id, "unbindRequest", unbind_req
+        )
 
         resp = self._proto.send(ldap_msg, unbind=True)
         await resp.wait()
@@ -1031,44 +1022,49 @@ class LDAPConnection:
         if self._proto.transport is None or self._proto.transport.is_closing():
             self._proto = None  # type: ignore
 
-    async def start_tls(self, ctx: Optional[ssl.SSLContext] = None) -> None:
+    async def start_tls(self, ctx: ssl.SSLContext | None = None) -> None:
         """Start tls protocol."""
-        if hasattr(self, '_proto') or self._proto.transport.is_closing():
-            self._socket, self._proto =\
-                await self.loop.create_connection(  # type: ignore
-                    lambda: LDAPClientProtocol(self.loop),
-                    self.server.host,
-                    self.server.port)
+        if hasattr(self, "_proto") or self._proto.transport.is_closing():
+            self._socket, self._proto = await self.loop.create_connection(  # type: ignore
+                lambda: LDAPClientProtocol(self.loop),
+                self.server.host,
+                self.server.port,
+            )
 
         # Get SSL context from server obj, if
         # it wasnt provided, it'll be the default one
 
-        resp = await self.extended('1.3.6.1.4.1.1466.20037')
+        resp = await self.extended("1.3.6.1.4.1.1466.20037")
 
-        if resp.data['description'] != 'success':
-            raise LDAPStartTlsException(
-                'Server doesnt want us to use TLS. {0}'.format(
-                    resp.data.get('message')))
+        if resp.data["description"] != "success":
+            raise LDAPStartTlsError(
+                "Server doesnt want us to use TLS. {}".format(
+                    resp.data.get("message")
+                )
+            )
 
         await self._proto.start_tls(
-            ctx or cast(ssl.SSLContext, self.server.ssl_context))
+            ctx or cast(ssl.SSLContext, self.server.ssl_context)
+        )
 
     async def extended(
         self,
         request_name: str,
-        request_value: Optional[str] = None,
-        controls: Optional[List[str]] = None,
-        no_encode: Optional[bool] = None,
+        request_value: str | None = None,
+        controls: list[str] | None = None,
+        no_encode: bool | None = None,
     ) -> Any:
         """Perform an extended operation."""
         # Create unbind request
         extended_req = extended_operation(
-            request_name, request_value, no_encode=no_encode)
+            request_name, request_value, no_encode=no_encode
+        )
         msg_id = self._next_msg_id
 
         # Generate final LDAP ASN message
         ldap_msg = LDAPClientProtocol.encapsulate_ldap_message(
-            msg_id, 'extendedReq', extended_req, controls=controls)
+            msg_id, "extendedReq", extended_req, controls=controls
+        )
 
         resp = self._proto.send(ldap_msg)
         await resp.wait()
@@ -1078,8 +1074,8 @@ class LDAPConnection:
     async def modify(
         self,
         dn: str,
-        changes: Dict[str, List[Tuple[str]]],
-        controls: Optional[List[str]] = None,
+        changes: dict[str, list[tuple[str]]],
+        controls: list[str] | None = None,
         auto_encode: bool = True,
     ) -> None:
         """Modify attributes of entry.
@@ -1096,36 +1092,40 @@ class LDAPConnection:
         dn = safe_dn(dn)
 
         if not isinstance(changes, dict):
-            raise LDAPChangeException('Changes is not a dict')
+            raise LDAPChangeError("Changes is not a dict")
 
         if not changes:
-            raise LDAPChangeException('Changes dict cannot be empty')
+            raise LDAPChangeError("Changes dict cannot be empty")
 
         modify_req = modify_operation(
-            dn, changes, auto_encode, None,
-            validator=None, check_names=False)
+            dn, changes, auto_encode, None, validator=None, check_names=False
+        )
         msg_id = self._next_msg_id
 
         # Generate final LDAP ASN message
         ldap_msg = LDAPClientProtocol.encapsulate_ldap_message(
-            msg_id, 'modifyRequest', modify_req, controls=controls)
+            msg_id, "modifyRequest", modify_req, controls=controls
+        )
 
         resp = self._proto.send(ldap_msg)
         await resp.wait()
 
-        if resp.data['result'] != 0:
-            raise LDAPModifyException(
-                'Failed to modify dn {0}. Msg {1} {2} {3}'.format(
+        if resp.data["result"] != 0:
+            raise LDAPModifyError(
+                "Failed to modify dn {}. Msg {} {} {}".format(
                     dn,
-                    resp.data['result'],
-                    resp.data.get('message'),
-                    resp.data.get('description')))
+                    resp.data["result"],
+                    resp.data.get("message"),
+                    resp.data.get("description"),
+                )
+            )
 
     async def delete(
-            self,
-            dn: str,
-            controls: Optional[List[str]] = None,
-            ignore_no_exist: bool = False) -> None:
+        self,
+        dn: str,
+        controls: list[str] | None = None,
+        ignore_no_exist: bool = False,
+    ) -> None:
         """Delete the entry identified by the DN from the DIB."""
         dn = safe_dn(dn)
 
@@ -1134,28 +1134,32 @@ class LDAPConnection:
 
         # Generate final LDAP ASN message
         ldap_msg = LDAPClientProtocol.encapsulate_ldap_message(
-            msg_id, 'delRequest', del_req, controls=controls)
+            msg_id, "delRequest", del_req, controls=controls
+        )
 
         resp = self._proto.send(ldap_msg)
         await resp.wait()
 
-        if resp.data['result'] != 0 and not (
-                    ignore_no_exist and resp.data['result'] == 32):
-            raise LDAPDeleteException(
-                'Failed to modify dn {0}. Msg {1} {2} {3}'.format(
+        if resp.data["result"] != 0 and not (
+            ignore_no_exist and resp.data["result"] == 32
+        ):
+            raise LDAPDeleteError(
+                "Failed to modify dn {}. Msg {} {} {}".format(
                     dn,
-                    resp.data['result'],
-                    resp.data.get('message'),
-                    resp.data.get('description')))
+                    resp.data["result"],
+                    resp.data.get("message"),
+                    resp.data.get("description"),
+                )
+            )
 
     async def add(
         self,
         dn: str,
-        object_class: Optional[Union[List[str], str]] = None,
-        attributes: Optional[Dict[str, Union[List[str], str]]] = None,
-        controls: Optional[List[str]] = None,
+        object_class: list[str] | str | None = None,
+        attributes: dict[str, list[str] | str] | None = None,
+        controls: list[str] | None = None,
         auto_encode: bool = True,
-        timeout: Optional[int] = None,
+        timeout: int | None = None,
     ) -> None:
         """Add dn to the DIT.
 
@@ -1178,23 +1182,23 @@ class LDAPConnection:
                 attr_object_class.extend(object_class)
 
         # Look through attributes to see if object classes are specified there
-        object_class_attr_name = ''
-        if _attributes:
-            for attr in _attributes:
-                if attr.lower() == 'objectclass':
-                    object_class_attr_name = attr
-
-                    obj_class_val = _attributes[object_class_attr_name]
-                    if isinstance(obj_class_val, str):
-                        attr_object_class.append(obj_class_val)
-                    else:
-                        attr_object_class.extend(obj_class_val)
-                    break
-        else:
+        object_class_attr_name = ""
+        if not _attributes:
             _attributes = {}
 
+        for attr in _attributes:
+            if attr.lower() == "objectclass":
+                object_class_attr_name = attr
+
+                obj_class_val = _attributes[object_class_attr_name]
+                if isinstance(obj_class_val, str):
+                    attr_object_class.append(obj_class_val)
+                else:
+                    attr_object_class.extend(obj_class_val)
+                break
+
         if not object_class_attr_name:
-            object_class_attr_name = 'objectClass'
+            object_class_attr_name = "objectClass"
 
         # So now we have attr_object_class,
         # which contains any passed in object classes
@@ -1202,12 +1206,15 @@ class LDAPConnection:
         # Converts objectclass to unicode
         # in case of bytes value, also removes dupes
         attr_object_class = list(
-            {to_unicode(object_class) for object_class in attr_object_class})
+            {to_unicode(object_class) for object_class in attr_object_class}
+        )
         _attributes[object_class_attr_name] = attr_object_class
 
         add_request = add_operation(
-            dn, _attributes,
-            auto_encode, None,
+            dn,
+            _attributes,
+            auto_encode,
+            None,
             validator=None,
             check_names=False,
         )
@@ -1215,7 +1222,11 @@ class LDAPConnection:
 
         # Generate final LDAP ASN message
         ldap_msg = LDAPClientProtocol.encapsulate_ldap_message(
-            msg_id, 'addRequest', add_request, controls=controls)
+            msg_id,
+            "addRequest",
+            add_request,
+            controls=controls,
+        )
 
         resp = self._proto.send(ldap_msg)
         if timeout:
@@ -1223,30 +1234,34 @@ class LDAPConnection:
         else:
             await resp.wait()
 
-        if resp.data['result'] != 0:
-            raise LDAPAddException(
-                'Failed to modify dn {0}. Msg {1} {2} {3}'.format(
+        if resp.data["result"] != 0:
+            raise LDAPAddError(
+                "Failed to modify dn {}. Msg {} {} {}".format(
                     dn,
-                    resp.data['result'],
-                    resp.data.get('message'),
-                    resp.data.get('description')))
+                    resp.data["result"],
+                    resp.data.get("message"),
+                    resp.data.get("description"),
+                )
+            )
 
     async def whoami(self) -> str:
         """Get WhoAmI extended result."""
-        resp = await self.extended('1.3.6.1.4.1.4203.1.11.3')
+        resp = await self.extended("1.3.6.1.4.1.4203.1.11.3")
 
-        if resp.data['result'] != 0:
-            raise LDAPExtendedException(
-                'Failed to perform extended query. Msg {0} {1} {2}'.format(
-                    resp.data['result'],
-                    resp.data.get('message'),
-                    resp.data.get('description')))
+        if resp.data["result"] != 0:
+            raise LDAPExtendedError(
+                "Failed to perform extended query. Msg {} {} {}".format(
+                    resp.data["result"],
+                    resp.data.get("message"),
+                    resp.data.get("description"),
+                )
+            )
 
-        result = resp.data.get('responseValue')
+        result = resp.data.get("responseValue")
         if isinstance(result, bytes):
             result = result.decode()
 
-        return result  # noqa: R504
+        return result
 
     @property
     def is_bound(self) -> bool:
@@ -1256,5 +1271,8 @@ class LDAPConnection:
     async def get_root_dse(self) -> SearchResult:
         """Get rootDSE from server."""
         return await self.search(
-            '', '(objectClass=*)',
-            search_scope='BASE', attributes='*')
+            "",
+            "(objectClass=*)",
+            search_scope="BASE",
+            attributes="*",
+        )

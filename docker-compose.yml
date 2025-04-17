@@ -1,0 +1,12 @@
+services:
+  aioldap:
+    build:
+      context: .
+      dockerfile: ./Dockerfile
+    image: aioldap
+    container_name: aioldap
+    hostname: krbclient
+    command: tail -f /dev/null
+    volumes:
+      - ./main.py:/app/main.py
+      - ./aioldap3.py:/app/aioldap3.py

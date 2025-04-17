@@ -17,6 +17,7 @@ packages = [
 
 [tool.poetry.dependencies]
 python = "^3.8.1"
+gssapi = "^1.9.0"
 ldap3 = "^2.9.1"
 
 [tool.poetry.group.dev]
@@ -35,7 +36,6 @@ requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
 
 [tool.mypy]
-plugins = ["sqlalchemy.ext.mypy.plugin", "pydantic.mypy"]
 ignore_missing_imports = true
 platform = "linux"
 disallow_untyped_defs = true

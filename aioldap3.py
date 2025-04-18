@@ -249,7 +249,12 @@ import asyncio
 import asyncio.sslproto
 import logging
 import ssl
-from contextlib import suppress
+import time
+from contextlib import (
+    AbstractAsyncContextManager,
+    asynccontextmanager,
+    suppress,
+)
 from copy import deepcopy
 from dataclasses import dataclass, field
 from types import TracebackType
@@ -660,7 +665,7 @@ class LDAPClientProtocol(asyncio.Protocol):
         return ldap_message
 
 
-class LDAPConnection:
+class LDAPConnection(AbstractAsyncContextManager):
     """Async connector."""
 
     _proto: LDAPClientProtocol
@@ -1279,3 +1284,80 @@ class LDAPConnection:
             search_scope="BASE",
             attributes="*",
         )
+
+
+class LDAPConnectionPool:
+    def __init__(
+        self,
+        create_connection: Callable[[], LDAPConnection],
+        maxsize=10,
+        idle_timeout=60,
+    ):
+        self._create_connection = create_connection
+        self._maxsize = maxsize
+        self._idle_timeout = idle_timeout
+        self._pool: asyncio.Queue[LDAPConnection] = asyncio.Queue(maxsize)
+        self._in_use = set()
+        self._last_used = {}
+        self._lock = asyncio.Lock()
+        self._initialized = False
+        self._cleanup_task = None
+        self._shutdown_event = asyncio.Event()
+
+    async def _initialize(self) -> None:
+        async with self._lock:
+            if not self._initialized:
+                for _ in range(self._maxsize):
+                    conn = await self._create_connection()
+                    await conn.bind()
+                    await self._pool.put(conn)
+                    self._last_used[conn] = time.monotonic()
+                self._initialized = True
+                self._cleanup_task = asyncio.create_task(
+                    self._cleanup_idle_connections()
+                )
+
+    async def _cleanup_idle_connections(self) -> None:
+        while not self._shutdown_event.is_set():
+            now = time.monotonic()
+            async with self._lock:
+                items: set[LDAPConnection] = set(self._pool)
+                for conn in items:
+                    if (
+                        conn not in self._in_use
+                        and (now - self._last_used.get(conn, 0))
+                        > self._idle_timeout
+                    ):
+                        items.remove(conn)
+                        self._last_used.pop(conn, None)
+                        await conn.unbind()
+                        new_conn = await self._create_connection()
+                        await new_conn.bind()
+                        await self._pool.put(new_conn)
+                        self._last_used[new_conn] = time.monotonic()
+            await asyncio.sleep(5)  # периодичность проверки
+
+    @asynccontextmanager
+    async def acquire(self) -> AsyncGenerator[LDAPConnection]:
+        if not self._initialized:
+            await self._initialize()
+
+        conn = await self._pool.get()
+        self._in_use.add(conn)
+        try:
+            yield conn
+        finally:
+            self._in_use.remove(conn)
+            self._last_used[conn] = time.monotonic()
+            await self._pool.put(conn)
+
+    async def close(self) -> None:
+        self._shutdown_event.set()
+        if self._cleanup_task:
+            await self._cleanup_task
+        async with self._lock:
+            while not self._pool.empty():
+                conn = await self._pool.get()
+                await conn.unbind()
+            self._initialized = False
+            self._last_used.clear()

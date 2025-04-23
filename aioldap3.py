@@ -247,7 +247,6 @@ from __future__ import annotations
 
 import asyncio
 import asyncio.sslproto
-import hashlib
 import logging
 import ssl
 from contextlib import suppress
@@ -258,7 +257,6 @@ from typing import Any, AsyncGenerator, Callable, Literal, cast
 
 import gssapi
 import gssapi.exceptions
-from gssapi.raw import ChannelBindings
 from ldap3.operation.add import add_operation
 from ldap3.operation.bind import bind_operation, bind_response_to_dict_fast
 from ldap3.operation.delete import delete_operation
@@ -634,21 +632,6 @@ class LDAPClientProtocol(asyncio.Protocol):
         # Wait for handshake
         await self._tls_event.wait()
 
-    def get_channel_bindings(self) -> ChannelBindings | None:
-        """Get channel bindings."""
-        try:
-            server_certificate = self.transport.get_extra_info("peercert")
-        except:
-            return None
-
-        if not server_certificate:
-            return None
-
-        digest = hashlib.sha256(server_certificate).digest()
-        application_data = b"tls-server-end-point:" + digest
-
-        return ChannelBindings(application_data=application_data)
-
     @property
     def is_bound(self) -> bool:
         """Check if resp is bound."""
@@ -751,27 +734,27 @@ class LDAPConnection:
         self._msg_id += 1
         return self._msg_id
 
-    async def sasl_bind(self, hostname: str) -> LDAPResponse:
+    async def sasl_bind(self) -> LDAPResponse:
         """Perform SASL bind."""
+        logger.debug("start SASL BIND operation")
         if not self._sasl_in_progress:
             self._sasl_in_progress = True
             try:
                 if self._sasl_mechanism == "GSSAPI":
-                    result = await self.sasl_gssapi(hostname)
+                    result = await self.sasl_gssapi()
                 else:
                     raise LDAPBindError("Unsupported SASL mechanism")
             finally:
                 self._sasl_in_progress = False
 
+        logger.debug("done SASL BIND operation")
+
         return result
 
-    async def sasl_gssapi(
-        self,
-        hostname: str,
-    ) -> LDAPResponse:
+    async def sasl_gssapi(self) -> LDAPResponse:
         """Perform SASL GSSAPI bind using the Kerberos v5 mechanism."""
         target_name = gssapi.Name(
-            "ldap@" + hostname, gssapi.NameType.hostbased_service
+            "ldap@" + self.server.host, gssapi.NameType.hostbased_service
         )
 
         creds = gssapi.Credentials(
@@ -780,13 +763,10 @@ class LDAPConnection:
             store=self._cred_store,
         )
 
-        channel_bindings = self._proto.get_channel_bindings()
-
         ctx = gssapi.SecurityContext(
             name=target_name,
             mech=gssapi.MechType.kerberos,
             creds=creds,
-            channel_bindings=channel_bindings,
         )
 
         self._msg_id = 0
@@ -794,8 +774,7 @@ class LDAPConnection:
         in_token = None
         try:
             while True:
-                print("Sending SASL token")
-                # print(f"Token: {in_token}")
+                logger.debug("Sending SASL token")
                 out_token = ctx.step(in_token)
                 if out_token is None:
                     out_token = b""
@@ -814,7 +793,6 @@ class LDAPConnection:
             out_token = ctx.wrap(bytes(client_security_layers), False)
             return await self.send_sasl_negotiation(out_token.message)
         except gssapi.exceptions.GSSError as exc:
-            print(f"GSSAPI error: {exc}")
             await self.abort_sasl_negotiation()
             raise LDAPBindError(f"LDAP GSSAPI error: {exc}") from exc
 
@@ -848,17 +826,13 @@ class LDAPConnection:
             sasl_credentials=payload,
         )
 
-        msg_id = self._next_msg_id
-
         # Generate ASN1 form of LDAP bind request
         ldap_msg = LDAPClientProtocol.encapsulate_ldap_message(
-            msg_id, "bindRequest", bind_req
+            self._next_msg_id, "bindRequest", bind_req
         )
 
         resp = self._proto.send(ldap_msg)
         await resp.wait()
-
-        # print(f"Response: {resp.data}")
 
         return resp
 
@@ -870,7 +844,8 @@ class LDAPConnection:
         server_security_layers = token[0]
         if not isinstance(server_security_layers, int):
             server_security_layers = ord(server_security_layers)  # type: ignore
-        if server_security_layers in (0, 1) and token[1:] != "\x00\x00\x00":
+
+        if server_security_layers in (0, 1) and token[1:] != b"\x00\x00\x00":
             raise LDAPBindError(
                 "Server max buffer size must be 0 if no security layer"
             )
@@ -945,7 +920,7 @@ class LDAPConnection:
 
         elif method == "SASL" and self._sasl_mechanism == "GSSAPI":
             print(f"SASL GSSAPI bind to {self.server.host}\n")
-            resp = await self.sasl_bind(self.server.host)
+            resp = await self.sasl_bind()
 
             if resp.data["result"] != 0:
                 raise LDAPBindError("Invalid Credentials")
@@ -1193,23 +1168,11 @@ class LDAPConnection:
 
     async def start_tls(self, ctx: ssl.SSLContext | None = None) -> None:
         """Start tls protocol."""
-        if hasattr(self, "_proto") or self._proto.transport.is_closing():
+        if not hasattr(self, "_proto") or self._proto.transport.is_closing():
             self._socket, self._proto = await self.loop.create_connection(
                 lambda: LDAPClientProtocol(self.loop),
                 self.server.host,
                 self.server.port,
-            )
-
-        # Get SSL context from server obj, if
-        # it wasnt provided, it'll be the default one
-
-        resp = await self.extended("1.3.6.1.4.1.1466.20037")
-
-        if resp.data["description"] != "success":
-            raise LDAPStartTlsError(
-                "Server doesnt want us to use TLS. {}".format(
-                    resp.data.get("message")
-                )
             )
 
         await self._proto.start_tls(

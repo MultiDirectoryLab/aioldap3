@@ -136,3 +136,10 @@ dmypy.json
 
 # ruff
 .ruff_cache
+
+# certs
+*.pem
+*.crt
+
+# Dev stuff
+dev

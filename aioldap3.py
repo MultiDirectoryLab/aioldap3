@@ -675,6 +675,7 @@ class LDAPConnection:
         password: str | None = None,
         sasl_mechanism: str | None = None,
         cred_store: dict[bytes | str, bytes | str] | None = None,
+        cred_token: bytes | None = None,
         loop: asyncio.AbstractEventLoop | None = None,
     ) -> None:
         """Set server, user and pw."""
@@ -684,6 +685,7 @@ class LDAPConnection:
         self._sasl_in_progress = False
         self._sasl_mechanism = sasl_mechanism
         self._cred_store = cred_store
+        self._cred_token = cred_token
 
         self.loop = loop or asyncio.get_running_loop()
 
@@ -736,7 +738,7 @@ class LDAPConnection:
 
     async def sasl_bind(self) -> LDAPResponse:
         """Perform SASL bind."""
-        logger.debug("start SASL BIND operation")
+        logger.debug(f"start SASL BIND operation to {self.server.host}")
         if not self._sasl_in_progress:
             self._sasl_in_progress = True
             try:
@@ -747,7 +749,7 @@ class LDAPConnection:
             finally:
                 self._sasl_in_progress = False
 
-        logger.debug("done SASL BIND operation")
+        logger.debug(f"done SASL BIND operation to {self.server.host}")
 
         return result
 
@@ -757,11 +759,14 @@ class LDAPConnection:
             "ldap@" + self.server.host, gssapi.NameType.hostbased_service
         )
 
-        creds = gssapi.Credentials(
-            name=gssapi.Name(self.bind_dn),
-            usage="initiate",
-            store=self._cred_store,
-        )
+        if self._cred_token:
+            creds = gssapi.Credentials(token=self._cred_token)
+        else:
+            creds = gssapi.Credentials(
+                name=gssapi.Name(self.bind_dn),
+                usage="initiate",
+                store=self._cred_store,
+            )
 
         ctx = gssapi.SecurityContext(
             name=target_name,
@@ -919,7 +924,6 @@ class LDAPConnection:
             )
 
         elif method == "SASL" and self._sasl_mechanism == "GSSAPI":
-            print(f"SASL GSSAPI bind to {self.server.host}\n")
             resp = await self.sasl_bind()
 
             if resp.data["result"] != 0:

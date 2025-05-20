@@ -1013,7 +1013,7 @@ class LDAPConnection:
         """
         if not self.is_bound:
             return  # Exit quickly if were already unbound
-        print("Unbinding")
+
         # Create unbind request
         unbind_req = UnbindRequest()
         msg_id = self._next_msg_id

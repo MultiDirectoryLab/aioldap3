@@ -1,9 +1,6 @@
 # Taken from aiomysql :D
 FLAGS=
 
-flake:
-	flake8 aioldap tests examples
-
 test: flake
 	py.test -s $(FLAGS) ./tests/
 

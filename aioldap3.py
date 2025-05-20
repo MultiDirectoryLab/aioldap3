@@ -730,6 +730,7 @@ class LDAPConnection:
         bind_dn: str | None = None,
         bind_pw: str | None = None,
         method: Literal["ANONYMOUS", "SIMPLE", "SASL", "NTLM"] = "SIMPLE",
+        timeout: int | None = None,
     ) -> None:
         """Bind to LDAP server.
 
@@ -804,7 +805,11 @@ class LDAPConnection:
         # can run simultaneously, were given an object to wait on
         # which will return once done.
         resp = self._proto.send(ldap_msg)
-        await resp.wait()  # TODO wrap with timeout
+
+        if timeout is not None:
+            await asyncio.wait_for(resp.wait(), timeout)
+        else:
+            await resp.wait()
 
         # If the result is non-zero for a bind, we got some invalid creds yo
         if resp.data["result"] != 0:
@@ -1008,22 +1013,26 @@ class LDAPConnection:
         """
         if not self.is_bound:
             return  # Exit quickly if were already unbound
-
+        print("Unbinding")
         # Create unbind request
         unbind_req = UnbindRequest()
         msg_id = self._next_msg_id
+
+        self._unbind_in_progress = True
 
         # Generate final LDAP ASN message
         ldap_msg = LDAPClientProtocol.encapsulate_ldap_message(
             msg_id, "unbindRequest", unbind_req
         )
-
         resp = self._proto.send(ldap_msg, unbind=True)
-        await resp.wait()
+
+        # Unbind is a special case, we dont get a response
+        with suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(resp.wait(), timeout=0)
 
         # If the underlying transport is closing, remove references to it.
         if self._proto.transport is None or self._proto.transport.is_closing():
-            self._proto = None  # type: ignore
+            del self._proto
 
     async def start_tls(self, ctx: ssl.SSLContext | None = None) -> None:
         """Start tls protocol."""
@@ -1047,7 +1056,7 @@ class LDAPConnection:
             )
 
         await self._proto.start_tls(
-            ctx or cast(ssl.SSLContext, self.server.ssl_context)
+            ctx or cast("ssl.SSLContext", self.server.ssl_context)
         )
 
     async def extended(

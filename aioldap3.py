@@ -252,17 +252,8 @@ import ssl
 from contextlib import suppress
 from copy import deepcopy
 from dataclasses import dataclass, field
-from tkinter import NO
 from types import TracebackType
-from typing import (
-    Any,
-    AsyncGenerator,
-    Callable,
-    Literal,
-    NoReturn,
-    cast,
-    overload,
-)
+from typing import Any, AsyncGenerator, Callable, Literal, cast, overload
 
 from _typeshed import ReadableBuffer
 from ldap3 import ANONYMOUS, SASL, SIMPLE
@@ -632,7 +623,7 @@ class LDAPClientProtocol(asyncio.Protocol):
 
         if self._original_transport is not None:
             self._original_transport.close()
-        super().connection_lost(exc)
+        super().connection_lost(exc=exc)
         self.transport = None  # type: ignore
 
     async def start_tls(self, ctx: ssl.SSLContext) -> None:

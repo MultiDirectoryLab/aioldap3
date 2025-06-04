@@ -1332,9 +1332,7 @@ class LDAPConnection:
     @property
     def is_bound(self) -> bool:
         """Check if bound."""
-        return (
-            getattr(self, "_proto", None) is not None and self._proto.is_bound
-        )
+        return self._proto is not None and self._proto.is_bound
 
     async def get_root_dse(self) -> SearchResult:
         """Get rootDSE from server."""
@@ -1392,14 +1390,17 @@ class LDAPConnection:
         :raises LDAPExtendedError: If password modification fails
         :raises ValueError: If new_password is empty or None
         """
-   
 
         if not self.is_bound or not self.bind_dn:
-            logger.error("Need bound LDAPConnection with bind_dn to modify password")
+            logger.error(
+                "Need bound LDAPConnection with bind_dn to modify password"
+            )
             raise LDAPBindError("Must be bound with bind_dn set")
 
         if not self.bind_pw:
-            logger.error("Current password is required for password modification")
+            logger.error(
+                "Current password is required for password modification"
+            )
             raise LDAPBindError("Current password must be set")
 
         try:
@@ -1408,15 +1409,26 @@ class LDAPConnection:
             request_value.setComponentByName("oldPassword", self.bind_pw)
             request_value.setComponentByName("newPassword", new_password)
 
-            psw_change_oid: Literal["1.3.6.1.4.1.4203.1.11.1"] = "1.3.6.1.4.1.4203.1.11.1"
-            res = await self.extended(psw_change_oid, request_value.encode_urself())
+            psw_change_oid: Literal["1.3.6.1.4.1.4203.1.11.1"] = (
+                "1.3.6.1.4.1.4203.1.11.1"
+            )
+            res = await self.extended(
+                psw_change_oid, request_value.encode_urself()
+            )
 
             if res.data["result"] != 0:
                 error_msg = f"Password modification failed: {res.data.get('message', 'Unknown error')}"
                 logger.error(error_msg)
                 raise LDAPExtendedError(error_msg)
 
-            logger.info(f"Password successfully modified for user: {self.bind_dn}")
+            logger.info(
+                f"Password successfully modified for user: {self.bind_dn}"
+            )
         except Exception as exc:
-            logger.error(f"Unexpected error during password modification: {exc}", exc_info=True)
-            raise LDAPExtendedError(f"Password modification failed: {exc}") from exc
+            logger.error(
+                f"Unexpected error during password modification: {exc}",
+                exc_info=True,
+            )
+            raise LDAPExtendedError(
+                f"Password modification failed: {exc}"
+            ) from exc

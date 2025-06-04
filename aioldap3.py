@@ -255,6 +255,7 @@ from dataclasses import dataclass, field
 from types import TracebackType
 from typing import Any, AsyncGenerator, Callable, Literal, cast
 
+from _typeshed import ReadableBuffer
 from ldap3.operation.add import add_operation
 from ldap3.operation.bind import bind_operation, bind_response_to_dict_fast
 from ldap3.operation.delete import delete_operation
@@ -273,6 +274,7 @@ from ldap3.protocol.rfc2696 import paged_search_control
 from ldap3.protocol.rfc4511 import (
     AuthenticationChoice,
     BindRequest,
+    ExtendedRequest,
     LDAPMessage,
     MessageID,
     ProtocolOp,
@@ -291,6 +293,7 @@ from ldap3.utils.asn1 import (
 from ldap3.utils.conv import to_unicode
 from ldap3.utils.dn import safe_dn
 from ldap3.utils.ntlm import NtlmClient
+from pyasn1.type.base import Asn1Item
 
 __all__ = [
     "Server",
@@ -643,7 +646,7 @@ class LDAPClientProtocol(asyncio.Protocol):
     def encapsulate_ldap_message(
         message_id: int,
         obj_name: str,
-        obj: str,
+        obj: str | BindRequest | UnbindRequest | ExtendedRequest | NtlmClient,
         controls: list[str] | None = None,
     ) -> LDAPMessage:
         """Create LDAP message."""
@@ -938,7 +941,7 @@ class LDAPConnection:
         types_only: bool = False,
         auto_escape: bool = True,
         auto_encode: bool = True,
-        schema: SchemaInfo = None,
+        schema: SchemaInfo | None = None,
         validator: Callable[[str], bool] | None = None,
         check_names: bool = False,
         timeout: int | None = None,
@@ -1062,7 +1065,7 @@ class LDAPConnection:
     async def extended(
         self,
         request_name: str,
-        request_value: str | None = None,
+        request_value: Asn1Item | ReadableBuffer | None = None,
         controls: list[str] | None = None,
         no_encode: bool | None = None,
     ) -> Any:
@@ -1278,7 +1281,9 @@ class LDAPConnection:
     @property
     def is_bound(self) -> bool:
         """Check if bound."""
-        return self._proto is not None and self._proto.is_bound
+        return (
+            getattr(self, "_proto", None) is not None and self._proto.is_bound
+        )
 
     async def get_root_dse(self) -> SearchResult:
         """Get rootDSE from server."""
@@ -1288,3 +1293,36 @@ class LDAPConnection:
             search_scope="BASE",
             attributes="*",
         )
+
+    async def rebind(
+        self,
+        bind_dn: str | None = None,
+        bind_pw: str | None = None,
+        method: Literal["ANONYMOUS", "SIMPLE", "SASL", "NTLM"] = "SIMPLE",
+        timeout: int | None = None,
+    ) -> None:
+        """Recreate binding again after unsuccessful try.
+
+        This method will:
+        1. Unbind if already bound
+        2. Close existing connection if any
+        3. Create new connection and bind with new credentials
+        4. Handle connection errors gracefully
+
+        :param bind_dn: Bind DN
+        :param bind_pw: Bind password
+        :param method: Authentication method
+        :param timeout: Timeout for bind operation in seconds
+        :raises LDAPBindError: If credentials are invalid or connection fails
+        """
+        if self.is_bound:
+            logger.info("Unbinding existing connection before rebind")
+            await self.unbind()
+
+        try:
+            await self.bind(bind_dn, bind_pw, method, timeout)
+        except Exception as exc:
+            logger.error(
+                f"Unexpected error during rebind: {exc}", exc_info=True
+            )
+            raise LDAPBindError(f"Rebind failed: {exc}") from exc

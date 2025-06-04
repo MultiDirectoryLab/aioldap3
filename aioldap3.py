@@ -252,11 +252,28 @@ import ssl
 from contextlib import suppress
 from copy import deepcopy
 from dataclasses import dataclass, field
+from tkinter import NO
 from types import TracebackType
-from typing import Any, AsyncGenerator, Callable, Literal, cast
+from typing import (
+    Any,
+    AsyncGenerator,
+    Callable,
+    Literal,
+    NoReturn,
+    cast,
+    overload,
+)
 
+from _typeshed import ReadableBuffer
+from ldap3 import ANONYMOUS, SASL, SIMPLE
+from ldap3.core.exceptions import (
+    LDAPPasswordIsMandatoryError,
+    LDAPUnknownAuthenticationMethodError,
+    LDAPUserNameIsMandatoryError,
+    LDAPUserNameNotAllowedError,
+)
 from ldap3.operation.add import add_operation
-from ldap3.operation.bind import bind_operation, bind_response_to_dict_fast
+from ldap3.operation.bind import bind_response_to_dict_fast
 from ldap3.operation.delete import delete_operation
 from ldap3.operation.extended import (
     extended_operation,
@@ -273,15 +290,21 @@ from ldap3.protocol.rfc2696 import paged_search_control
 from ldap3.protocol.rfc4511 import (
     AuthenticationChoice,
     BindRequest,
+    ExtendedRequest,
     LDAPMessage,
     MessageID,
     ProtocolOp,
+    SaslCredentials,
     Sequence,
+    SicilyNegotiate,
+    SicilyPackageDiscovery,
+    SicilyResponse,
     Simple,
     UnbindRequest,
     Version,
 )
 from ldap3.protocol.rfc4512 import SchemaInfo
+from ldap3.protocol.sasl.sasl import validate_simple_password
 from ldap3.strategy.base import BaseStrategy  # Consider moving this to utils
 from ldap3.utils.asn1 import (
     decode_message_fast,
@@ -291,6 +314,7 @@ from ldap3.utils.asn1 import (
 from ldap3.utils.conv import to_unicode
 from ldap3.utils.dn import safe_dn
 from ldap3.utils.ntlm import NtlmClient
+from pyasn1.type.base import Asn1Item
 
 __all__ = [
     "Server",
@@ -643,7 +667,7 @@ class LDAPClientProtocol(asyncio.Protocol):
     def encapsulate_ldap_message(
         message_id: int,
         obj_name: str,
-        obj: str,
+        obj: BindRequest | UnbindRequest | str | None | ExtendedRequest,
         controls: list[str] | None = None,
     ) -> LDAPMessage:
         """Create LDAP message."""
@@ -731,6 +755,7 @@ class LDAPConnection:
         bind_pw: str | None = None,
         method: Literal["ANONYMOUS", "SIMPLE", "SASL", "NTLM"] = "SIMPLE",
         timeout: int | None = None,
+        connection_timeout: float | None = None,
     ) -> None:
         """Bind to LDAP server.
 
@@ -744,12 +769,18 @@ class LDAPConnection:
         """
         # Create proto if its not created already
         if not hasattr(self, "_proto") or self._proto.transport.is_closing():
-            self._socket, self._proto = await self.loop.create_connection(
-                lambda: LDAPClientProtocol(self.loop),
-                host=self.server.host,
-                port=self.server.port,
-                ssl=self.server.ssl_context,
-            )
+            try:
+                self._socket, self._proto = await asyncio.wait_for(
+                    self.loop.create_connection(
+                        lambda: LDAPClientProtocol(self.loop),
+                        host=self.server.host,
+                        port=self.server.port,
+                        ssl=self.server.ssl_context,
+                    ),
+                    timeout=connection_timeout,
+                )
+            except TimeoutError:
+                raise LDAPBindError("Connection timeout")
 
         if bind_dn is None:
             bind_dn = self.bind_dn
@@ -938,7 +969,7 @@ class LDAPConnection:
         types_only: bool = False,
         auto_escape: bool = True,
         auto_encode: bool = True,
-        schema: SchemaInfo = None,
+        schema: SchemaInfo | None = None,
         validator: Callable[[str], bool] | None = None,
         check_names: bool = False,
         timeout: int | None = None,
@@ -1044,7 +1075,7 @@ class LDAPConnection:
             )
 
         # Get SSL context from server obj, if
-        # it wasnt provided, it'll be the default one
+        # it'snt provided, it'll be the default one
 
         resp = await self.extended("1.3.6.1.4.1.1466.20037")
 
@@ -1062,7 +1093,7 @@ class LDAPConnection:
     async def extended(
         self,
         request_name: str,
-        request_value: str | None = None,
+        request_value: Asn1Item | ReadableBuffer | None = None,
         controls: list[str] | None = None,
         no_encode: bool | None = None,
     ) -> Any:
@@ -1288,3 +1319,138 @@ class LDAPConnection:
             search_scope="BASE",
             attributes="*",
         )
+
+
+# @overload
+# def bind_operation(
+#     version: int,
+#     authentication: Literal["SIMPLE"],
+#     name: str | None = None,
+#     password: str | None = None,
+#     sasl_mechanism: str | None = None,
+#     sasl_credentials: str | None = None,
+#     auto_encode: bool = False,
+# ) -> BindRequest | None: ...
+
+
+@overload
+def bind_operation(
+    version: int,
+    authentication: Literal[
+        "SICILY_NEGOTIATE_NTLM",
+        "SICILY_RESPONSE_NTLM",
+        "SICILY_PACKAGE_DISCOVERY",
+        "NTLM",
+    ],
+    name: NtlmClient,
+    password: str | None = None,
+    sasl_mechanism: str | None = None,
+    sasl_credentials: str | None = None,
+    auto_encode: bool = False,
+) -> BindRequest | None: ...
+
+
+@overload
+def bind_operation(
+    version: int,
+    authentication: Literal["SASL", "ANONYMOUS"],
+    name: str | None = None,
+    password: str | None = None,
+    sasl_mechanism: str | None = None,
+    sasl_credentials: str | None = None,
+    auto_encode: bool = False,
+) -> BindRequest | None: ...
+
+
+def bind_operation(
+    version: int,
+    authentication: Literal[
+        "SIMPLE",
+        "SASL",
+        "ANONYMOUS",
+        "SICILY_PACKAGE_DISCOVERY",
+        "SICILY_NEGOTIATE_NTLM",
+        "SICILY_RESPONSE_NTLM",
+        "NTLM",
+    ],
+    name: str | NtlmClient | None = None,
+    password: str | None = None,
+    sasl_mechanism: str | None = None,
+    sasl_credentials: str | None = None,
+    auto_encode: bool = False,
+) -> BindRequest | None:
+    request = BindRequest()
+    request["version"] = Version(version)
+    if name is None:
+        name = ""
+    if isinstance(name, str):
+        request["name"] = to_unicode(name) if auto_encode else name
+    if authentication == SIMPLE:
+        if not name:
+            raise LDAPUserNameIsMandatoryError(
+                "user name is mandatory in simple bind"
+            )
+        if password:
+            request["authentication"] = (
+                AuthenticationChoice().setComponentByName(
+                    "simple", Simple(validate_simple_password(password))
+                )
+            )
+        else:
+            raise LDAPPasswordIsMandatoryError(
+                "password is mandatory in simple bind"
+            )
+    elif authentication == SASL:
+        sasl_creds = SaslCredentials()
+        sasl_creds["mechanism"] = sasl_mechanism
+        if sasl_credentials is not None:
+            sasl_creds["credentials"] = sasl_credentials
+
+        request["authentication"] = AuthenticationChoice().setComponentByName(
+            "sasl", sasl_creds
+        )
+    elif authentication == ANONYMOUS:
+        if name:
+            raise LDAPUserNameNotAllowedError(
+                "user name not allowed in anonymous bind"
+            )
+        request["name"] = ""
+        request["authentication"] = AuthenticationChoice().setComponentByName(
+            "simple", Simple("")
+        )
+    elif (
+        authentication == "SICILY_PACKAGE_DISCOVERY"
+    ):  # https://msdn.microsoft.com/en-us/library/cc223501.aspx
+        request["name"] = ""
+        request["authentication"] = AuthenticationChoice().setComponentByName(
+            "sicilyPackageDiscovery", SicilyPackageDiscovery("")
+        )
+    elif authentication == "SICILY_NEGOTIATE_NTLM" and isinstance(
+        name, NtlmClient
+    ):  # https://msdn.microsoft.com/en-us/library/cc223501.aspx
+        request["name"] = "NTLM"
+        request["authentication"] = AuthenticationChoice().setComponentByName(
+            "sicilyNegotiate", SicilyNegotiate(name.create_negotiate_message())
+        )  # ntlm client in self.name
+    elif authentication == "SICILY_RESPONSE_NTLM" and isinstance(
+        name, NtlmClient
+    ):  # https://msdn.microsoft.com/en-us/library/cc223501.aspx
+        name.parse_challenge_message(
+            password
+        )  # server_creds returned by server in password
+        server_creds = name.create_authenticate_message()
+        if server_creds:
+            request["name"] = ""
+            request["authentication"] = (
+                AuthenticationChoice().setComponentByName(
+                    "sicilyResponse", SicilyResponse(server_creds)
+                )
+            )
+        else:
+            request = None
+    else:
+        raise LDAPUnknownAuthenticationMethodError(
+            "unknown authentication method"
+        )
+
+    return request

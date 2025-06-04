@@ -253,7 +253,7 @@ from contextlib import suppress
 from copy import deepcopy
 from dataclasses import dataclass, field
 from types import TracebackType
-from typing import Any, AsyncGenerator, Callable, Literal, NoReturn, cast
+from typing import Any, AsyncGenerator, Callable, Literal, cast
 
 from ldap3.operation.add import add_operation
 from ldap3.operation.bind import bind_operation, bind_response_to_dict_fast
@@ -732,7 +732,7 @@ class LDAPConnection:
         method: Literal["ANONYMOUS", "SIMPLE", "SASL", "NTLM"] = "SIMPLE",
         timeout: int | None = None,
         connection_timeout: float | None = None,
-    ) -> None | NoReturn:
+    ) -> None:
         """Bind to LDAP server.
 
         Creates a connection to the LDAP server if there isnt one
@@ -835,7 +835,7 @@ class LDAPConnection:
         method: Literal["ANONYMOUS", "SIMPLE", "SASL", "NTLM"] = "SIMPLE",
         timeout: int | None = None,
         timeout_connection: float | None = None,
-    ) -> None | NoReturn:
+    ) -> None:
         """Recreate binding again after unsuccessful try without exceptions.
 
         :param bind_dn: Bind DN
@@ -878,7 +878,7 @@ class LDAPConnection:
         timeout: int | None = None,
         get_operational_attributes: bool = False,
         page_size: int = 0,
-    ) -> SearchResult | NoReturn:
+    ) -> SearchResult:
         """Do search in DIT.
 
         :param str search_base: base DN
@@ -984,7 +984,7 @@ class LDAPConnection:
         timeout: int | None = None,
         get_operational_attributes: bool = False,
         page_size: int = 500,
-    ) -> AsyncGenerator[dict[str, Any], None] | NoReturn:
+    ) -> AsyncGenerator[dict[str, Any], None]:
         """Paginate search.
 
         Do search in DIT.
@@ -1078,7 +1078,7 @@ class LDAPConnection:
         self,
         ctx: ssl.SSLContext | None = None,
         connection_timeout: float | None = None,
-    ) -> None | NoReturn:
+    ) -> None:
         """Start tls protocol."""
         if hasattr(self, "_proto") or self._proto.transport.is_closing():
             try:

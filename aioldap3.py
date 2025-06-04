@@ -253,7 +253,7 @@ from contextlib import suppress
 from copy import deepcopy
 from dataclasses import dataclass, field
 from types import TracebackType
-from typing import Any, AsyncGenerator, Callable, Literal, cast
+from typing import Any, AsyncGenerator, Callable, Literal, NoReturn, cast
 
 from ldap3.operation.add import add_operation
 from ldap3.operation.bind import bind_operation, bind_response_to_dict_fast
@@ -731,8 +731,8 @@ class LDAPConnection:
         bind_pw: str | None = None,
         method: Literal["ANONYMOUS", "SIMPLE", "SASL", "NTLM"] = "SIMPLE",
         timeout: int | None = None,
-        connection_timeout: int | None = None,
-    ) -> None:
+        connection_timeout: float | None = None,
+    ) -> None | NoReturn:
         """Bind to LDAP server.
 
         Creates a connection to the LDAP server if there isnt one
@@ -757,7 +757,7 @@ class LDAPConnection:
                     ),
                     timeout=connection_timeout,
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 raise LDAPBindError("Connection timeout")
 
         if bind_dn is None:
@@ -834,7 +834,8 @@ class LDAPConnection:
         bind_pw: str | None = None,
         method: Literal["ANONYMOUS", "SIMPLE", "SASL", "NTLM"] = "SIMPLE",
         timeout: int | None = None,
-    ) -> None:
+        timeout_connection: float | None = None,
+    ) -> None | NoReturn:
         """Recreate binding again after unsuccessful try without exceptions.
 
         :param bind_dn: Bind DN
@@ -847,13 +848,16 @@ class LDAPConnection:
             logger.error("Connection already binded")
             await self.unbind()
         try:
-            return await self.bind(bind_dn, bind_pw, method, timeout)
+            await self.bind(
+                bind_dn, bind_pw, method, timeout, timeout_connection
+            )
         except Exception as exc:
             logger.exception(
                 "Unable to rebind as a different user, furthermore the"
                 + f"server abruptly closed the connection for {self}",
                 exc_info=exc,
             )
+            raise LDAPBindError(str(exc))
 
     async def search(
         self,
@@ -874,7 +878,7 @@ class LDAPConnection:
         timeout: int | None = None,
         get_operational_attributes: bool = False,
         page_size: int = 0,
-    ) -> SearchResult:
+    ) -> SearchResult | NoReturn:
         """Do search in DIT.
 
         :param str search_base: base DN
@@ -980,7 +984,7 @@ class LDAPConnection:
         timeout: int | None = None,
         get_operational_attributes: bool = False,
         page_size: int = 500,
-    ) -> AsyncGenerator[dict[str, Any], None]:
+    ) -> AsyncGenerator[dict[str, Any], None] | NoReturn:
         """Paginate search.
 
         Do search in DIT.
@@ -1070,14 +1074,24 @@ class LDAPConnection:
         if self._proto.transport is None or self._proto.transport.is_closing():
             del self._proto
 
-    async def start_tls(self, ctx: ssl.SSLContext | None = None) -> None:
+    async def start_tls(
+        self,
+        ctx: ssl.SSLContext | None = None,
+        connection_timeout: float | None = None,
+    ) -> None | NoReturn:
         """Start tls protocol."""
         if hasattr(self, "_proto") or self._proto.transport.is_closing():
-            self._socket, self._proto = await self.loop.create_connection(
-                lambda: LDAPClientProtocol(self.loop),
-                self.server.host,
-                self.server.port,
-            )
+            try:
+                self._socket, self._proto = await asyncio.wait_for(
+                    self.loop.create_connection(
+                        lambda: LDAPClientProtocol(self.loop),
+                        self.server.host,
+                        self.server.port,
+                    ),
+                    timeout=connection_timeout,
+                )
+            except TimeoutError:
+                raise LDAPStartTlsError("Connection timeout")
 
         # Get SSL context from server obj, if
         # it wasnt provided, it'll be the default one

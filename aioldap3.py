@@ -731,6 +731,7 @@ class LDAPConnection:
         bind_pw: str | None = None,
         method: Literal["ANONYMOUS", "SIMPLE", "SASL", "NTLM"] = "SIMPLE",
         timeout: int | None = None,
+        connection_timeout: int | None = None,
     ) -> None:
         """Bind to LDAP server.
 
@@ -740,16 +741,24 @@ class LDAPConnection:
         :param bind_pw: Bind password
         :param host: LDAP Host
         :param port: LDAP Port
+        :param timeout: Timeout for bind operation in seconds
+        :param connection_timeout: Timeout for initial connection in seconds
         :raises LDAPBindError: If credentials are invalid
         """
         # Create proto if its not created already
         if not hasattr(self, "_proto") or self._proto.transport.is_closing():
-            self._socket, self._proto = await self.loop.create_connection(
-                lambda: LDAPClientProtocol(self.loop),
-                host=self.server.host,
-                port=self.server.port,
-                ssl=self.server.ssl_context,
-            )
+            try:
+                self._socket, self._proto = await asyncio.wait_for(
+                    self.loop.create_connection(
+                        lambda: LDAPClientProtocol(self.loop),
+                        host=self.server.host,
+                        port=self.server.port,
+                        ssl=self.server.ssl_context,
+                    ),
+                    timeout=connection_timeout,
+                )
+            except asyncio.TimeoutError:
+                raise LDAPBindError("Connection timeout")
 
         if bind_dn is None:
             bind_dn = self.bind_dn
@@ -818,6 +827,33 @@ class LDAPConnection:
         # Ok we got success, this is used
         # in other places as a guard if your not bound
         self._proto.is_bound = True
+
+    async def rebind(
+        self,
+        bind_dn: str | None = None,
+        bind_pw: str | None = None,
+        method: Literal["ANONYMOUS", "SIMPLE", "SASL", "NTLM"] = "SIMPLE",
+        timeout: int | None = None,
+    ) -> None:
+        """Recreate binding again after unsuccessful try without exceptions.
+
+        :param bind_dn: Bind DN
+        :param bind_pw: Bind password
+        :param host: LDAP Host
+        :param port: LDAP Port
+        :raises LDAPBindError: If credentials are invalid
+        """
+        if self.is_bound:
+            logger.error("Connection already binded")
+            await self.unbind()
+        try:
+            return await self.bind(bind_dn, bind_pw, method, timeout)
+        except Exception as exc:
+            logger.exception(
+                "Unable to rebind as a different user, furthermore the"
+                + f"server abruptly closed the connection for {self}",
+                exc_info=exc,
+            )
 
     async def search(
         self,
@@ -938,7 +974,7 @@ class LDAPConnection:
         types_only: bool = False,
         auto_escape: bool = True,
         auto_encode: bool = True,
-        schema: SchemaInfo = None,
+        schema: SchemaInfo | None = None,
         validator: Callable[[str], bool] | None = None,
         check_names: bool = False,
         timeout: int | None = None,

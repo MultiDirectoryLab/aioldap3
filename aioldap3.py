@@ -1321,18 +1321,6 @@ class LDAPConnection:
         )
 
 
-# @overload
-# def bind_operation(
-#     version: int,
-#     authentication: Literal["SIMPLE"],
-#     name: str | None = None,
-#     password: str | None = None,
-#     sasl_mechanism: str | None = None,
-#     sasl_credentials: str | None = None,
-#     auto_encode: bool = False,
-# ) -> BindRequest | None: ...
-
-
 @overload
 def bind_operation(
     version: int,

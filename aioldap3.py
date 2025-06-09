@@ -252,7 +252,6 @@ import ssl
 from contextlib import suppress
 from copy import deepcopy
 from dataclasses import dataclass, field
-from lib2to3.fixes.fix_idioms import TYPE
 from types import TracebackType
 from typing import (
     TYPE_CHECKING,
@@ -260,7 +259,6 @@ from typing import (
     AsyncGenerator,
     Callable,
     Literal,
-    NoReturn,
     cast,
 )
 
@@ -280,10 +278,7 @@ from ldap3.operation.search import (
 from ldap3.protocol.convert import build_controls_list
 from ldap3.protocol.rfc2696 import paged_search_control
 from ldap3.protocol.rfc3062 import (
-    NewPasswd,
-    OldPasswd,
     PasswdModifyRequestValue,
-    UserIdentity,
 )
 from ldap3.protocol.rfc4511 import (
     AuthenticationChoice,
@@ -309,8 +304,6 @@ from ldap3.utils.dn import safe_dn
 from ldap3.utils.ntlm import NtlmClient
 from pyasn1.codec.ber import encoder
 
-# from pyasn1.codec.ber.encoder import SingleItemEncoder
-from pyasn1.type import namedtype, tag, univ
 from pyasn1.type.base import Asn1Item
 
 if TYPE_CHECKING:

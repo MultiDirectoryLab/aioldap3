@@ -252,10 +252,18 @@ import ssl
 from contextlib import suppress
 from copy import deepcopy
 from dataclasses import dataclass, field
+from lib2to3.fixes.fix_idioms import TYPE
 from types import TracebackType
-from typing import Any, AsyncGenerator, Callable, Literal, NoReturn, cast
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    AsyncGenerator,
+    Callable,
+    Literal,
+    NoReturn,
+    cast,
+)
 
-from _typeshed import ReadableBuffer
 from ldap3.operation.add import add_operation
 from ldap3.operation.bind import bind_operation, bind_response_to_dict_fast
 from ldap3.operation.delete import delete_operation
@@ -271,6 +279,12 @@ from ldap3.operation.search import (
 )
 from ldap3.protocol.convert import build_controls_list
 from ldap3.protocol.rfc2696 import paged_search_control
+from ldap3.protocol.rfc3062 import (
+    NewPasswd,
+    OldPasswd,
+    PasswdModifyRequestValue,
+    UserIdentity,
+)
 from ldap3.protocol.rfc4511 import (
     AuthenticationChoice,
     BindRequest,
@@ -299,6 +313,8 @@ from pyasn1.codec.ber import encoder
 from pyasn1.type import namedtype, tag, univ
 from pyasn1.type.base import Asn1Item
 
+if TYPE_CHECKING:
+    from _typeshed import ReadableBuffer
 __all__ = [
     "Server",
     "LDAPResponse",
@@ -409,53 +425,6 @@ class LDAPResponse:
         finally:
             if self.exception:
                 raise self.exception
-
-
-class PasswordModifyRequest(univ.Sequence):
-    """ASN.1 definition for password modify request.
-
-    PasswdModifyRequestValue ::= SEQUENCE {
-        userIdentity    [0]  OCTET STRING OPTIONAL
-        oldPasswd       [1]  OCTET STRING OPTIONAL
-        newPasswd       [2]  OCTET STRING OPTIONAL }
-
-    Example:
-        request_value = PasswordModifyRequest()
-        request_value.setComponentByName("userIdentity", "dn")
-        request_value.setComponentByName("oldPassword", "****")
-        request_value.setComponentByName("newPassword", "****")
-        ldap_client.extended(oid, request_value.encode_urself())
-    """
-
-    componentType = namedtype.NamedTypes(  # noqa: N815
-        namedtype.OptionalNamedType(
-            "userIdentity",
-            univ.OctetString().subtype(
-                implicitTag=tag.Tag(
-                    tag.tagClassContext, tag.tagFormatSimple, 0
-                )
-            ),
-        ),
-        namedtype.OptionalNamedType(
-            "oldPassword",
-            univ.OctetString().subtype(
-                implicitTag=tag.Tag(
-                    tag.tagClassContext, tag.tagFormatSimple, 1
-                )
-            ),
-        ),
-        namedtype.OptionalNamedType(
-            "newPassword",
-            univ.OctetString().subtype(
-                implicitTag=tag.Tag(
-                    tag.tagClassContext, tag.tagFormatSimple, 2
-                )
-            ),
-        ),
-    )
-
-    def encode_urself(self) -> bytes:
-        return encoder.encode(self)
 
 
 class LDAPClientProtocol(asyncio.Protocol):
@@ -1376,54 +1345,61 @@ class LDAPConnection:
             )
             raise LDAPBindError(f"Rebind failed: {exc}") from exc
 
-    async def modify_password(self, new_password: str) -> None:
+    async def modify_password(
+        self,
+        new_password: str,
+        user_dn: str,
+        old_password: str,
+    ) -> None:
         """Modify user password using LDAP password modify extended operation.
 
         This method uses the LDAP password modify extended operation (RFC 3062)
-        to change the user's password. The operation requires:
+        to change a user's password. The operation requires:
         1. An authenticated connection
-        2. The current bind DN and password
-        3. The new password to set
+        2. The user's DN
+        3. The current password
+        4. The new password to set
 
         :param new_password: The new password to set
-        :raises LDAPBindError: If not bound or bind_dn is not set
+        :param user_dn: The DN of the user whose password to change
+        :param old_password: The current password of the user
+        :raises LDAPBindError: If not bound
         :raises LDAPExtendedError: If password modification fails
-        :raises ValueError: If new_password is empty or None
         """
-
-        if not self.is_bound or not self.bind_dn:
-            logger.error(
-                "Need bound LDAPConnection with bind_dn to modify password"
-            )
-            raise LDAPBindError("Must be bound with bind_dn set")
-
-        if not self.bind_pw:
-            logger.error(
-                "Current password is required for password modification"
-            )
-            raise LDAPBindError("Current password must be set")
-
+        if not self.is_bound:
+            logger.error("Need bound LDAPConnection to modify password")
+            raise LDAPBindError("Must be bound to modify password")
         try:
-            request_value = PasswordModifyRequest()
-            request_value.setComponentByName("userIdentity", self.bind_dn)
-            request_value.setComponentByName("oldPassword", self.bind_pw)
-            request_value.setComponentByName("newPassword", new_password)
+            request_value = PasswdModifyRequestValue()
+            request_value.setComponentByName("userIdentity", user_dn)
+            request_value.setComponentByName("oldPasswd", old_password)
+            request_value.setComponentByName("newPasswd", new_password)
 
             psw_change_oid: Literal["1.3.6.1.4.1.4203.1.11.1"] = (
                 "1.3.6.1.4.1.4203.1.11.1"
             )
+
+            logger.debug(
+                f"Attempting to modify password for user: {user_dn}"
+            )
+
             res = await self.extended(
-                psw_change_oid, request_value.encode_urself()
+                psw_change_oid, encoder.encode(request_value)
             )
 
             if res.data["result"] != 0:
-                error_msg = f"Password modification failed: {res.data.get('message', 'Unknown error')}"
+                error_msg = (
+                    f"Password modification failed: {res.data.get('message', 'Unknown error')} "
+                    f"(result code: {res.data.get('result')}, "
+                    f"description: {res.data.get('description')})"
+                )
                 logger.error(error_msg)
                 raise LDAPExtendedError(error_msg)
 
             logger.info(
-                f"Password successfully modified for user: {self.bind_dn}"
+                f"Password successfully modified for user: {user_dn}"
             )
+
         except Exception as exc:
             logger.error(
                 f"Unexpected error during password modification: {exc}",

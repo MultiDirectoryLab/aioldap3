@@ -253,7 +253,7 @@ from contextlib import suppress
 from copy import deepcopy
 from dataclasses import dataclass, field
 from types import TracebackType
-from typing import Any, AsyncGenerator, Callable, Literal, cast
+from typing import TYPE_CHECKING, Any, AsyncGenerator, Callable, Literal, cast
 
 from ldap3.operation.add import add_operation
 from ldap3.operation.bind import bind_operation, bind_response_to_dict_fast
@@ -270,9 +270,11 @@ from ldap3.operation.search import (
 )
 from ldap3.protocol.convert import build_controls_list
 from ldap3.protocol.rfc2696 import paged_search_control
+from ldap3.protocol.rfc3062 import PasswdModifyRequestValue
 from ldap3.protocol.rfc4511 import (
     AuthenticationChoice,
     BindRequest,
+    ExtendedRequest,
     LDAPMessage,
     MessageID,
     ProtocolOp,
@@ -291,7 +293,11 @@ from ldap3.utils.asn1 import (
 from ldap3.utils.conv import to_unicode
 from ldap3.utils.dn import safe_dn
 from ldap3.utils.ntlm import NtlmClient
+from pyasn1.codec.ber import encoder
+from pyasn1.type.base import Asn1Item
 
+if TYPE_CHECKING:
+    from _typeshed import ReadableBuffer
 __all__ = [
     "Server",
     "LDAPResponse",
@@ -644,7 +650,7 @@ class LDAPClientProtocol(asyncio.Protocol):
     def encapsulate_ldap_message(
         message_id: int,
         obj_name: str,
-        obj: str,
+        obj: str | BindRequest | UnbindRequest | ExtendedRequest | NtlmClient,
         controls: list[str] | None = None,
     ) -> LDAPMessage:
         """Create LDAP message."""
@@ -806,7 +812,7 @@ class LDAPConnection:
             bind_req = bind_operation(
                 self.server.version,
                 "SICILY_PACKAGE_DISCOVERY",
-                ntlm_client,
+                ntlm_client,  # type: ignore
             )
 
         else:
@@ -1089,7 +1095,7 @@ class LDAPConnection:
     async def extended(
         self,
         request_name: str,
-        request_value: str | None = None,
+        request_value: Asn1Item | ReadableBuffer | None = None,
         controls: list[str] | None = None,
         no_encode: bool | None = None,
     ) -> Any:
@@ -1315,3 +1321,55 @@ class LDAPConnection:
             search_scope="BASE",
             attributes="*",
         )
+
+    async def modify_password(
+        self,
+        new_password: str,
+        user_dn: str,
+        old_password: str,
+    ) -> None:
+        """Modify user password using LDAP password modify extended operation.
+
+        This method uses the LDAP password modify extended operation (RFC 3062)
+        to change a user's password. The operation requires:
+        1. An authenticated connection
+        2. The user's DN
+        3. The current password
+        4. The new password to set
+
+        :param new_password: The new password to set
+        :param user_dn: The DN of the user whose password to change
+        :param old_password: The current password of the user
+        :raises LDAPBindError: If not bound
+        :raises LDAPExtendedError: If password modification fails
+        """
+        if not self.is_bound:
+            logger.error("Need bound LDAPConnection to modify password")
+            raise LDAPBindError("Must be bound to modify password")
+
+        request_value = PasswdModifyRequestValue()
+        request_value.setComponentByName("userIdentity", user_dn)
+        request_value.setComponentByName("oldPasswd", old_password)
+        request_value.setComponentByName("newPasswd", new_password)
+
+        psw_change_oid: Literal["1.3.6.1.4.1.4203.1.11.1"] = (
+            "1.3.6.1.4.1.4203.1.11.1"
+        )
+
+        logger.debug(f"Attempting to modify password for user: {user_dn}")
+
+        res = await self.extended(
+            psw_change_oid,
+            encoder.encode(request_value),
+        )
+
+        if res.data["result"] != 0:
+            error_msg = (
+                f"Password modification failed: {res.data.get('message', 'Unknown error')} "
+                f"(result code: {res.data.get('result')}, "
+                f"description: {res.data.get('description')})"
+            )
+            logger.error(error_msg)
+            raise LDAPExtendedError(error_msg)
+
+        logger.info(f"Password successfully modified for user: {user_dn}")

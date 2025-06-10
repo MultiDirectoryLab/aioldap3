@@ -1319,38 +1319,29 @@ class LDAPConnection:
         if not self.is_bound:
             logger.error("Need bound LDAPConnection to modify password")
             raise LDAPBindError("Must be bound to modify password")
-        try:
-            request_value = PasswdModifyRequestValue()
-            request_value.setComponentByName("userIdentity", user_dn)
-            request_value.setComponentByName("oldPasswd", old_password)
-            request_value.setComponentByName("newPasswd", new_password)
 
-            psw_change_oid: Literal["1.3.6.1.4.1.4203.1.11.1"] = (
-                "1.3.6.1.4.1.4203.1.11.1"
+        request_value = PasswdModifyRequestValue()
+        request_value.setComponentByName("userIdentity", user_dn)
+        request_value.setComponentByName("oldPasswd", old_password)
+        request_value.setComponentByName("newPasswd", new_password)
+
+        psw_change_oid: Literal["1.3.6.1.4.1.4203.1.11.1"] = (
+            "1.3.6.1.4.1.4203.1.11.1"
+        )
+
+        logger.debug(f"Attempting to modify password for user: {user_dn}")
+
+        res = await self.extended(
+            psw_change_oid, encoder.encode(request_value)
+        )
+
+        if res.data["result"] != 0:
+            error_msg = (
+                f"Password modification failed: {res.data.get('message', 'Unknown error')} "
+                f"(result code: {res.data.get('result')}, "
+                f"description: {res.data.get('description')})"
             )
+            logger.error(error_msg)
+            raise LDAPExtendedError(error_msg)
 
-            logger.debug(f"Attempting to modify password for user: {user_dn}")
-
-            res = await self.extended(
-                psw_change_oid, encoder.encode(request_value)
-            )
-
-            if res.data["result"] != 0:
-                error_msg = (
-                    f"Password modification failed: {res.data.get('message', 'Unknown error')} "
-                    f"(result code: {res.data.get('result')}, "
-                    f"description: {res.data.get('description')})"
-                )
-                logger.error(error_msg)
-                raise LDAPExtendedError(error_msg)
-
-            logger.info(f"Password successfully modified for user: {user_dn}")
-
-        except Exception as exc:
-            logger.error(
-                f"Unexpected error during password modification: {exc}",
-                exc_info=True,
-            )
-            raise LDAPExtendedError(
-                f"Password modification failed: {exc}"
-            ) from exc
+        logger.info(f"Password successfully modified for user: {user_dn}")

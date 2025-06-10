@@ -747,18 +747,20 @@ class LDAPConnection:
         """
         # Create proto if its not created already
         if not hasattr(self, "_proto") or self._proto.transport.is_closing():
-            try:
+            create_conn = self.loop.create_connection(
+                lambda: LDAPClientProtocol(self.loop),
+                host=self.server.host,
+                port=self.server.port,
+                ssl=self.server.ssl_context,
+            )
+            
+            if connection_timeout is not None:
                 self._socket, self._proto = await asyncio.wait_for(
-                    self.loop.create_connection(
-                        lambda: LDAPClientProtocol(self.loop),
-                        host=self.server.host,
-                        port=self.server.port,
-                        ssl=self.server.ssl_context,
-                    ),
+                    create_conn,
                     timeout=connection_timeout,
                 )
-            except TimeoutError:
-                raise LDAPBindError("Connection timeout")
+            else:
+                self._socket, self._proto = await create_conn
 
         if bind_dn is None:
             bind_dn = self.bind_dn
@@ -1081,20 +1083,21 @@ class LDAPConnection:
     ) -> None:
         """Start tls protocol."""
         if hasattr(self, "_proto") or self._proto.transport.is_closing():
-            try:
+            create_conn = self.loop.create_connection(
+                lambda: LDAPClientProtocol(self.loop),
+                self.server.host,
+                self.server.port,
+            )            
+            if connection_timeout is not None:
                 self._socket, self._proto = await asyncio.wait_for(
-                    self.loop.create_connection(
-                        lambda: LDAPClientProtocol(self.loop),
-                        self.server.host,
-                        self.server.port,
-                    ),
+                    create_conn,
                     timeout=connection_timeout,
                 )
-            except TimeoutError:
-                raise LDAPStartTlsError("Connection timeout")
+            else:
+                self._socket, self._proto = await create_conn
 
         # Get SSL context from server obj, if
-        # it wasnt provided, it'll be the default one
+        # it'snt provided, it'll be the default one
 
         resp = await self.extended("1.3.6.1.4.1.1466.20037")
 

@@ -253,14 +253,7 @@ from contextlib import suppress
 from copy import deepcopy
 from dataclasses import dataclass, field
 from types import TracebackType
-from typing import (
-    TYPE_CHECKING,
-    Any,
-    AsyncGenerator,
-    Callable,
-    Literal,
-    cast,
-)
+from typing import TYPE_CHECKING, Any, AsyncGenerator, Callable, Literal, cast
 
 from ldap3.operation.add import add_operation
 from ldap3.operation.bind import bind_operation, bind_response_to_dict_fast
@@ -277,9 +270,7 @@ from ldap3.operation.search import (
 )
 from ldap3.protocol.convert import build_controls_list
 from ldap3.protocol.rfc2696 import paged_search_control
-from ldap3.protocol.rfc3062 import (
-    PasswdModifyRequestValue,
-)
+from ldap3.protocol.rfc3062 import PasswdModifyRequestValue
 from ldap3.protocol.rfc4511 import (
     AuthenticationChoice,
     BindRequest,
@@ -303,7 +294,6 @@ from ldap3.utils.conv import to_unicode
 from ldap3.utils.dn import safe_dn
 from ldap3.utils.ntlm import NtlmClient
 from pyasn1.codec.ber import encoder
-
 from pyasn1.type.base import Asn1Item
 
 if TYPE_CHECKING:
@@ -1305,39 +1295,6 @@ class LDAPConnection:
             attributes="*",
         )
 
-    async def rebind(
-        self,
-        bind_dn: str | None = None,
-        bind_pw: str | None = None,
-        method: Literal["ANONYMOUS", "SIMPLE", "SASL", "NTLM"] = "SIMPLE",
-        timeout: int | None = None,
-    ) -> None:
-        """Recreate binding again after unsuccessful try.
-
-        This method will:
-        1. Unbind if already bound
-        2. Close existing connection if any
-        3. Create new connection and bind with new credentials
-        4. Handle connection errors gracefully
-
-        :param bind_dn: Bind DN
-        :param bind_pw: Bind password
-        :param method: Authentication method
-        :param timeout: Timeout for bind operation in seconds
-        :raises LDAPBindError: If credentials are invalid or connection fails
-        """
-        if self.is_bound:
-            logger.info("Unbinding existing connection before rebind")
-            await self.unbind()
-
-        try:
-            await self.bind(bind_dn, bind_pw, method, timeout)
-        except Exception as exc:
-            logger.error(
-                f"Unexpected error during rebind: {exc}", exc_info=True
-            )
-            raise LDAPBindError(f"Rebind failed: {exc}") from exc
-
     async def modify_password(
         self,
         new_password: str,
@@ -1372,9 +1329,7 @@ class LDAPConnection:
                 "1.3.6.1.4.1.4203.1.11.1"
             )
 
-            logger.debug(
-                f"Attempting to modify password for user: {user_dn}"
-            )
+            logger.debug(f"Attempting to modify password for user: {user_dn}")
 
             res = await self.extended(
                 psw_change_oid, encoder.encode(request_value)
@@ -1389,9 +1344,7 @@ class LDAPConnection:
                 logger.error(error_msg)
                 raise LDAPExtendedError(error_msg)
 
-            logger.info(
-                f"Password successfully modified for user: {user_dn}"
-            )
+            logger.info(f"Password successfully modified for user: {user_dn}")
 
         except Exception as exc:
             logger.error(

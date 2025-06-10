@@ -370,7 +370,7 @@ class Server:
     ssl_context: ssl.SSLContext | None = field(
         default_factory=ssl.create_default_context
     )
-    connection_timeout: float | int | None = None
+    timeout: float | int | None = None
     version: Literal[2, 3] = 3
 
     def __post_init__(self) -> None:
@@ -728,7 +728,7 @@ class LDAPConnection:
 
     async def _create_connection(
         self,
-        connection_timeout: int | float | None = None,
+        timeout: int | float | None = None,
         ssl_context: ssl.SSLContext | None = None,
     ) -> None:
         """Create connection with timeout handling."""
@@ -739,7 +739,7 @@ class LDAPConnection:
             ssl=ssl_context,
         )
 
-        timeout = connection_timeout or self.server.connection_timeout
+        timeout = timeout or self.server.timeout
         if timeout is not None:
             self._socket, self._proto = await asyncio.wait_for(
                 create_conn,

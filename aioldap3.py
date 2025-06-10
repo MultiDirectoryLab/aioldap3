@@ -264,7 +264,10 @@ from ldap3.core.exceptions import (
     LDAPUserNameNotAllowedError,
 )
 from ldap3.operation.add import add_operation
-from ldap3.operation.bind import bind_response_to_dict_fast
+from ldap3.operation.bind import (
+    bind_operation as bind_operation_ldap3,
+    bind_response_to_dict_fast,
+)
 from ldap3.operation.delete import delete_operation
 from ldap3.operation.extended import (
     extended_operation,
@@ -1318,8 +1321,8 @@ def bind_operation(
     authentication: Literal[
         "SICILY_NEGOTIATE_NTLM",
         "SICILY_RESPONSE_NTLM",
-        "SICILY_PACKAGE_DISCOVERY",
         "NTLM",
+        "SICILY_PACKAGE_DISCOVERY",
     ],
     name: NtlmClient,
     password: str | None = None,
@@ -1341,6 +1344,18 @@ def bind_operation(
 ) -> BindRequest | None: ...
 
 
+@overload
+def bind_operation(
+    version: int,
+    authentication: Literal["SIMPLE"],
+    name: str,
+    password: str,
+    sasl_mechanism: str | None = None,
+    sasl_credentials: str | None = None,
+    auto_encode: bool = False,
+) -> BindRequest: ...
+
+
 def bind_operation(
     version: int,
     authentication: Literal[
@@ -1358,78 +1373,27 @@ def bind_operation(
     sasl_credentials: str | None = None,
     auto_encode: bool = False,
 ) -> BindRequest | None:
-    request = BindRequest()
-    request["version"] = Version(version)
-    if name is None:
-        name = ""
-    if isinstance(name, str):
-        request["name"] = to_unicode(name) if auto_encode else name
-    if authentication == SIMPLE:
-        if not name:
-            raise LDAPUserNameIsMandatoryError(
-                "user name is mandatory in simple bind"
-            )
-        if password:
-            request["authentication"] = (
-                AuthenticationChoice().setComponentByName(
-                    "simple", Simple(validate_simple_password(password))
-                )
-            )
-        else:
-            raise LDAPPasswordIsMandatoryError(
-                "password is mandatory in simple bind"
-            )
-    elif authentication == SASL:
-        sasl_creds = SaslCredentials()
-        sasl_creds["mechanism"] = sasl_mechanism
-        if sasl_credentials is not None:
-            sasl_creds["credentials"] = sasl_credentials
+    """Create bind request.
 
-        request["authentication"] = AuthenticationChoice().setComponentByName(
-            "sasl", sasl_creds
-        )
-    elif authentication == ANONYMOUS:
-        if name:
-            raise LDAPUserNameNotAllowedError(
-                "user name not allowed in anonymous bind"
-            )
-        request["name"] = ""
-        request["authentication"] = AuthenticationChoice().setComponentByName(
-            "simple", Simple("")
-        )
-    elif (
-        authentication == "SICILY_PACKAGE_DISCOVERY"
-    ):  # https://msdn.microsoft.com/en-us/library/cc223501.aspx
-        request["name"] = ""
-        request["authentication"] = AuthenticationChoice().setComponentByName(
-            "sicilyPackageDiscovery", SicilyPackageDiscovery("")
-        )
-    elif authentication == "SICILY_NEGOTIATE_NTLM" and isinstance(
-        name, NtlmClient
-    ):  # https://msdn.microsoft.com/en-us/library/cc223501.aspx
-        request["name"] = "NTLM"
-        request["authentication"] = AuthenticationChoice().setComponentByName(
-            "sicilyNegotiate", SicilyNegotiate(name.create_negotiate_message())
-        )  # ntlm client in self.name
-    elif authentication == "SICILY_RESPONSE_NTLM" and isinstance(
-        name, NtlmClient
-    ):  # https://msdn.microsoft.com/en-us/library/cc223501.aspx
-        name.parse_challenge_message(
-            password
-        )  # server_creds returned by server in password
-        server_creds = name.create_authenticate_message()
-        if server_creds:
-            request["name"] = ""
-            request["authentication"] = (
-                AuthenticationChoice().setComponentByName(
-                    "sicilyResponse", SicilyResponse(server_creds)
-                )
-            )
-        else:
-            request = None
-    else:
-        raise LDAPUnknownAuthenticationMethodError(
-            "unknown authentication method"
-        )
-
-    return request
+    :param version: LDAP version
+    :param authentication: Authentication method
+    :param name: Bind DN or NtlmClient
+    :param password: Bind password
+    :param sasl_mechanism: SASL mechanism
+    :param sasl_credentials: SASL credentials
+    :param auto_encode: Auto encode values
+    :raises LDAPUserNameIsMandatoryError: If name is required but not provided
+    :raises LDAPPasswordIsMandatoryError: If password is required but not provided
+    :raises LDAPUnknownAuthenticationMethodError: If authentication method is unknown
+    :raises LDAPUserNameNotAllowedError: If name is not allowed for this authentication method
+    :return: BindRequest object or None if NTLM authentication fails
+    """
+    return bind_operation_ldap3(
+        version=version,
+        authentication=authentication,
+        name=name,  # type: ignore
+        password=password,
+        sasl_mechanism=sasl_mechanism,
+        sasl_credentials=sasl_credentials,
+        auto_encode=auto_encode,
+    )

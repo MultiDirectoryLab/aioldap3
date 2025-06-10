@@ -857,37 +857,6 @@ class LDAPConnection:
         # in other places as a guard if your not bound
         self._proto.is_bound = True
 
-    async def rebind(
-        self,
-        bind_dn: str | None = None,
-        bind_pw: str | None = None,
-        method: Literal["ANONYMOUS", "SIMPLE", "SASL", "NTLM"] = "SIMPLE",
-        timeout: int | None = None,
-        timeout_connection: float | None = None,
-    ) -> None:
-        """Recreate binding again after unsuccessful try without exceptions.
-
-        :param bind_dn: Bind DN
-        :param bind_pw: Bind password
-        :param host: LDAP Host
-        :param port: LDAP Port
-        :raises LDAPBindError: If credentials are invalid
-        """
-        if self.is_bound:
-            logger.error("Connection already binded")
-            await self.unbind()
-        try:
-            await self.bind(
-                bind_dn, bind_pw, method, timeout, timeout_connection
-            )
-        except Exception as exc:
-            logger.exception(
-                "Unable to rebind as a different user, furthermore the"
-                + f"server abruptly closed the connection for {self}",
-                exc_info=exc,
-            )
-            raise LDAPBindError(str(exc))
-
     async def search(
         self,
         search_base: str,
@@ -1110,7 +1079,9 @@ class LDAPConnection:
     ) -> None:
         """Start tls protocol."""
         if hasattr(self, "_proto") or self._proto.transport.is_closing():
-            await self._create_connection(connection_timeout=connection_timeout)
+            await self._create_connection(
+                connection_timeout=connection_timeout
+            )
 
         # Get SSL context from server obj, if
         # it'snt provided, it'll be the default one

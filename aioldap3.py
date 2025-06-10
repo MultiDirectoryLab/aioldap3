@@ -790,7 +790,7 @@ class LDAPConnection:
             bind_req = bind_operation(
                 self.server.version,
                 "SICILY_PACKAGE_DISCOVERY",
-                ntlm_client,
+                ntlm_client,  # type: ignore
             )
 
         else:
@@ -1050,7 +1050,7 @@ class LDAPConnection:
             )
 
         # Get SSL context from server obj, if
-        # it'snt provided, it'll be the default one
+        # it wasnt provided, it'll be the default one
 
         resp = await self.extended("1.3.6.1.4.1.1466.20037")
 

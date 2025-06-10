@@ -726,26 +726,12 @@ class LDAPConnection:
         self._msg_id += 1
         return self._msg_id
 
-    def _get_connection_timeout(
-        self, connection_timeout: int | float | None
-    ) -> int | float:
-        """Get connection timeout value.
-
-        :param connection_timeout: Optional timeout value
-        :return: Timeout value from parameter or server default
-        """
-        return connection_timeout or self.server.connection_timeout
-
     async def _create_connection(
         self,
         connection_timeout: int | float | None = None,
         ssl_context: ssl.SSLContext | None = None,
     ) -> None:
-        """Create connection with timeout handling.
-
-        :param connection_timeout: Optional timeout value
-        :param ssl_context: Optional SSL context
-        """
+        """Create connection with timeout handling."""
         create_conn = self.loop.create_connection(
             lambda: LDAPClientProtocol(self.loop),
             self.server.host,
@@ -753,7 +739,7 @@ class LDAPConnection:
             ssl=ssl_context,
         )
 
-        timeout = self._get_connection_timeout(connection_timeout)
+        timeout = connection_timeout or self.server.connection_timeout
         if timeout is not None:
             self._socket, self._proto = await asyncio.wait_for(
                 create_conn,
@@ -1084,7 +1070,7 @@ class LDAPConnection:
             )
 
         # Get SSL context from server obj, if
-        # it'snt provided, it'll be the default one
+        # it's not provided, it'll be the default one
 
         resp = await self.extended("1.3.6.1.4.1.1466.20037")
 

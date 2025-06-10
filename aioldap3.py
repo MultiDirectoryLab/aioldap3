@@ -753,8 +753,7 @@ class LDAPConnection:
         bind_dn: str | None = None,
         bind_pw: str | None = None,
         method: Literal["ANONYMOUS", "SIMPLE", "SASL", "NTLM"] = "SIMPLE",
-        timeout: int | None = None,
-        connection_timeout: int | float | None = None,
+        timeout: int | float | None = None,
     ) -> None:
         """Bind to LDAP server.
 
@@ -765,13 +764,13 @@ class LDAPConnection:
         :param host: LDAP Host
         :param port: LDAP Port
         :param timeout: Timeout for bind operation in seconds
-        :param connection_timeout: Timeout for initial connection in seconds
         :raises LDAPBindError: If credentials are invalid
         """
         # Create proto if its not created already
         if not hasattr(self, "_proto") or self._proto.transport.is_closing():
             await self._create_connection(
-                connection_timeout, self.server.ssl_context
+                timeout,
+                self.server.ssl_context,
             )
 
         if bind_dn is None:
@@ -1060,11 +1059,16 @@ class LDAPConnection:
     async def start_tls(
         self,
         ctx: ssl.SSLContext | None = None,
-        connection_timeout: int | float | None = None,
+        timeout: int | float | None = None,
     ) -> None:
-        """Start tls protocol."""
+        """Start tls protocol.
+
+        :param ctx: Optional SSL context.
+        :param timeout: Optional timeout in seconds.
+        :raises LDAPStartTlsError: On TLS related errors or connection timeout.
+        """
         if hasattr(self, "_proto") or self._proto.transport.is_closing():
-            await self._create_connection(connection_timeout)
+            await self._create_connection(timeout)
 
         # Get SSL context from server obj, if
         # it's not provided, it'll be the default one

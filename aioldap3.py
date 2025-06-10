@@ -253,16 +253,16 @@ from contextlib import suppress
 from copy import deepcopy
 from dataclasses import dataclass, field
 from types import TracebackType
-from typing import Any, AsyncGenerator, Callable, Literal, cast, overload
-
-from _typeshed import ReadableBuffer
-from ldap3 import ANONYMOUS, SASL, SIMPLE
-from ldap3.core.exceptions import (
-    LDAPPasswordIsMandatoryError,
-    LDAPUnknownAuthenticationMethodError,
-    LDAPUserNameIsMandatoryError,
-    LDAPUserNameNotAllowedError,
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    AsyncGenerator,
+    Callable,
+    Literal,
+    cast,
+    overload,
 )
+
 from ldap3.operation.add import add_operation
 from ldap3.operation.bind import (
     bind_operation as bind_operation_ldap3,
@@ -288,17 +288,11 @@ from ldap3.protocol.rfc4511 import (
     LDAPMessage,
     MessageID,
     ProtocolOp,
-    SaslCredentials,
-    Sequence,
-    SicilyNegotiate,
-    SicilyPackageDiscovery,
-    SicilyResponse,
     Simple,
     UnbindRequest,
     Version,
 )
 from ldap3.protocol.rfc4512 import SchemaInfo
-from ldap3.protocol.sasl.sasl import validate_simple_password
 from ldap3.strategy.base import BaseStrategy  # Consider moving this to utils
 from ldap3.utils.asn1 import (
     decode_message_fast,
@@ -309,7 +303,10 @@ from ldap3.utils.conv import to_unicode
 from ldap3.utils.dn import safe_dn
 from ldap3.utils.ntlm import NtlmClient
 from pyasn1.type.base import Asn1Item
+from pyasn1.type.univ import Sequence
 
+if TYPE_CHECKING:
+    from _typeshed import ReadableBuffer
 __all__ = [
     "Server",
     "LDAPResponse",

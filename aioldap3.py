@@ -1332,7 +1332,8 @@ class LDAPConnection:
         logger.debug(f"Attempting to modify password for user: {user_dn}")
 
         res = await self.extended(
-            psw_change_oid, encoder.encode(request_value)
+            psw_change_oid,
+            encoder.encode(request_value),
         )
 
         if res.data["result"] != 0:

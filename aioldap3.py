@@ -370,7 +370,7 @@ class Server:
     ssl_context: ssl.SSLContext | None = field(
         default_factory=ssl.create_default_context
     )
-    connection_timeout: Literal[1] | float | int = 1
+    connection_timeout: float | int | None = None
     version: Literal[2, 3] = 3
 
     def __post_init__(self) -> None:
@@ -771,8 +771,7 @@ class LDAPConnection:
         # Create proto if its not created already
         if not hasattr(self, "_proto") or self._proto.transport.is_closing():
             await self._create_connection(
-                connection_timeout=connection_timeout,
-                ssl_context=self.server.ssl_context,
+                connection_timeout, self.server.ssl_context
             )
 
         if bind_dn is None:
@@ -1065,9 +1064,7 @@ class LDAPConnection:
     ) -> None:
         """Start tls protocol."""
         if hasattr(self, "_proto") or self._proto.transport.is_closing():
-            await self._create_connection(
-                connection_timeout=connection_timeout
-            )
+            await self._create_connection(connection_timeout)
 
         # Get SSL context from server obj, if
         # it's not provided, it'll be the default one

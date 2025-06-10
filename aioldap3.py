@@ -728,7 +728,7 @@ class LDAPConnection:
 
     def _get_connection_timeout(
         self, connection_timeout: int | float | None
-    ) -> int | float | None:
+    ) -> int | float:
         """Get connection timeout value.
 
         :param connection_timeout: Optional timeout value

@@ -370,6 +370,7 @@ class Server:
     ssl_context: ssl.SSLContext | None = field(
         default_factory=ssl.create_default_context
     )
+    connection_timeout: Literal[1] | float | int = 1
     version: Literal[2, 3] = 3
 
     def __post_init__(self) -> None:
@@ -725,13 +726,49 @@ class LDAPConnection:
         self._msg_id += 1
         return self._msg_id
 
+    def _get_connection_timeout(
+        self, connection_timeout: int | float | None
+    ) -> int | float | None:
+        """Get connection timeout value.
+
+        :param connection_timeout: Optional timeout value
+        :return: Timeout value from parameter or server default
+        """
+        return connection_timeout or self.server.connection_timeout
+
+    async def _create_connection(
+        self,
+        connection_timeout: int | float | None = None,
+        ssl_context: ssl.SSLContext | None = None,
+    ) -> None:
+        """Create connection with timeout handling.
+
+        :param connection_timeout: Optional timeout value
+        :param ssl_context: Optional SSL context
+        """
+        create_conn = self.loop.create_connection(
+            lambda: LDAPClientProtocol(self.loop),
+            self.server.host,
+            self.server.port,
+            ssl=ssl_context,
+        )
+
+        timeout = self._get_connection_timeout(connection_timeout)
+        if timeout is not None:
+            self._socket, self._proto = await asyncio.wait_for(
+                create_conn,
+                timeout=timeout,
+            )
+        else:
+            self._socket, self._proto = await create_conn
+
     async def bind(
         self,
         bind_dn: str | None = None,
         bind_pw: str | None = None,
         method: Literal["ANONYMOUS", "SIMPLE", "SASL", "NTLM"] = "SIMPLE",
         timeout: int | None = None,
-        connection_timeout: float | None = None,
+        connection_timeout: int | float | None = None,
     ) -> None:
         """Bind to LDAP server.
 
@@ -747,20 +784,10 @@ class LDAPConnection:
         """
         # Create proto if its not created already
         if not hasattr(self, "_proto") or self._proto.transport.is_closing():
-            create_conn = self.loop.create_connection(
-                lambda: LDAPClientProtocol(self.loop),
-                host=self.server.host,
-                port=self.server.port,
-                ssl=self.server.ssl_context,
+            await self._create_connection(
+                connection_timeout=connection_timeout,
+                ssl_context=self.server.ssl_context,
             )
-            
-            if connection_timeout is not None:
-                self._socket, self._proto = await asyncio.wait_for(
-                    create_conn,
-                    timeout=connection_timeout,
-                )
-            else:
-                self._socket, self._proto = await create_conn
 
         if bind_dn is None:
             bind_dn = self.bind_dn
@@ -1079,22 +1106,11 @@ class LDAPConnection:
     async def start_tls(
         self,
         ctx: ssl.SSLContext | None = None,
-        connection_timeout: float | None = None,
+        connection_timeout: int | float | None = None,
     ) -> None:
         """Start tls protocol."""
         if hasattr(self, "_proto") or self._proto.transport.is_closing():
-            create_conn = self.loop.create_connection(
-                lambda: LDAPClientProtocol(self.loop),
-                self.server.host,
-                self.server.port,
-            )            
-            if connection_timeout is not None:
-                self._socket, self._proto = await asyncio.wait_for(
-                    create_conn,
-                    timeout=connection_timeout,
-                )
-            else:
-                self._socket, self._proto = await create_conn
+            await self._create_connection(connection_timeout=connection_timeout)
 
         # Get SSL context from server obj, if
         # it'snt provided, it'll be the default one

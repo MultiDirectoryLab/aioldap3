@@ -1058,8 +1058,10 @@ class LDAPConnection:
         with suppress(asyncio.TimeoutError):
             await asyncio.wait_for(resp.wait(), timeout=0)
 
-        # If the underlying transport is closing, remove references to it.
-        if self._proto.transport is None or self._proto.transport.is_closing():
+        # Cleanup transport and protocol
+        if not (
+            self._proto.transport is None or self._proto.transport.is_closing()
+        ):
             del self._proto
 
     async def start_tls(
@@ -1311,7 +1313,7 @@ class LDAPConnection:
     @property
     def is_bound(self) -> bool:
         """Check if bound."""
-        return self._proto is not None and self._proto.is_bound
+        return hasattr(self, "_proto") and self._proto.is_bound
 
     async def get_root_dse(self) -> SearchResult:
         """Get rootDSE from server."""

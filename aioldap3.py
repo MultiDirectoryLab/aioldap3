@@ -773,7 +773,11 @@ class LDAPConnection:
         :param method: Authentication method (ANONYMOUS, SIMPLE, SASL, NTLM)
         :param timeout: Timeout for bind operation in seconds
         :param sasl_mechanism: SASL mechanism to use (e.g. 'DIGEST-MD5', 'GSSAPI')
-        :param sasl_credentials: SASL credentials for the chosen mechanism
+        :param sasl_credentials: SASL credentials for the chosen mechanism. Format depends on the mechanism:
+            - For DIGEST-MD5: Base64 encoded credentials in format "username:password"
+            - For GSSAPI: Base64 encoded Kerberos ticket
+            - For PLAIN: Base64 encoded credentials in format "username\0username\0password"
+            - For EXTERNAL: Usually empty or client certificate
         :raises LDAPBindError: If credentials are invalid
         """
         # Create proto if its not created already

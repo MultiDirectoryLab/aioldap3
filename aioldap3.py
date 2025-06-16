@@ -249,6 +249,7 @@ import asyncio
 import asyncio.sslproto
 import logging
 import ssl
+from abc import ABC, abstractmethod
 from contextlib import suppress
 from copy import deepcopy
 from dataclasses import dataclass, field
@@ -278,11 +279,11 @@ from ldap3.protocol.rfc4511 import (
     LDAPMessage,
     MessageID,
     ProtocolOp,
+    SaslCredentials,
     Sequence,
     Simple,
     UnbindRequest,
     Version,
-    SaslCredentials,
 )
 from ldap3.protocol.rfc4512 import SchemaInfo
 from ldap3.strategy.base import BaseStrategy  # Consider moving this to utils
@@ -365,6 +366,50 @@ class SearchResult:
     entries: EntryType
     refs: list[Any]
     pagination: bool | None
+
+
+class SaslCreds(ABC):
+    """Base class for SASL credentials."""
+
+    @property
+    @abstractmethod
+    def sasl_mechanism(self) -> str:
+        """Get SASL mechanism name."""
+
+    @abstractmethod
+    def encode(self) -> str:
+        """Encode credentials for SASL authentication.
+
+        :return: Base64 encoded credentials string
+        """
+
+
+class SimpleSaslCreds(SaslCreds):
+    """Simple SASL credentials implementation for PLAIN authentication."""
+
+    def __init__(self, username: str, password: str) -> None:
+        """Initialize Simple SASL credentials.
+
+        :param username: Username for authentication
+        :param password: Password for authentication
+        """
+        self.username = username
+        self.password = password
+
+    @property
+    def sasl_mechanism(self) -> Literal["PLAIN"]:
+        """Get SASL mechanism name.
+
+        :return: The SASL mechanism name "PLAIN"
+        """
+        return "PLAIN"
+
+    def encode(self) -> str:
+        """Encode credentials for SASL authentication.
+
+        :return: Credentials string in format "username\x00username\x00password"
+        """
+        return f"{self.username}\x00{self.username}\x00{self.password}"
 
 
 @dataclass
@@ -761,8 +806,7 @@ class LDAPConnection:
         bind_pw: str | None = None,
         method: Literal["ANONYMOUS", "SIMPLE", "SASL", "NTLM"] = "SIMPLE",
         timeout: int | float | None = None,
-        sasl_mechanism: str | None = None,
-        sasl_credentials: str | None = None,
+        sasl_credentials: SaslCreds | None = None,
     ) -> None:
         """Bind to LDAP server.
 
@@ -772,12 +816,7 @@ class LDAPConnection:
         :param bind_pw: Bind password
         :param method: Authentication method (ANONYMOUS, SIMPLE, SASL, NTLM)
         :param timeout: Timeout for bind operation in seconds
-        :param sasl_mechanism: SASL mechanism to use (e.g. 'DIGEST-MD5', 'GSSAPI')
-        :param sasl_credentials: SASL credentials for the chosen mechanism. Format depends on the mechanism:
-            - For DIGEST-MD5: Base64 encoded credentials in format "username:password"
-            - For GSSAPI: Base64 encoded Kerberos ticket
-            - For PLAIN: Base64 encoded credentials in format "username\0username\0password"
-            - For EXTERNAL: Usually empty or client certificate
+        :param sasl_credentials: SASL credentials object implementing SaslCreds interface
         :raises LDAPBindError: If credentials are invalid
         """
         # Create proto if its not created already
@@ -824,16 +863,20 @@ class LDAPConnection:
             )
 
         elif method == "SASL":
-            
+            if not sasl_credentials:
+                raise LDAPBindError(
+                    "SASL credentials must be provided for SASL authentication"
+                )
+
             bind_req = BindRequest()
             bind_req["version"] = Version(3)
             bind_req["name"] = bind_dn
-            
+
+            # Create SASL credentials
             sasl_creds = SaslCredentials()
-            sasl_creds["mechanism"] = sasl_mechanism
-            if sasl_credentials:
-                sasl_creds["credentials"] = sasl_credentials
-            
+            sasl_creds["mechanism"] = sasl_credentials.sasl_mechanism
+            sasl_creds["credentials"] = sasl_credentials.encode()
+
             bind_req["authentication"] = (
                 AuthenticationChoice().setComponentByName(
                     "sasl",

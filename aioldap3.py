@@ -282,6 +282,7 @@ from ldap3.protocol.rfc4511 import (
     Simple,
     UnbindRequest,
     Version,
+    SaslCredentials,
 )
 from ldap3.protocol.rfc4512 import SchemaInfo
 from ldap3.strategy.base import BaseStrategy  # Consider moving this to utils
@@ -760,6 +761,8 @@ class LDAPConnection:
         bind_pw: str | None = None,
         method: Literal["ANONYMOUS", "SIMPLE", "SASL", "NTLM"] = "SIMPLE",
         timeout: int | float | None = None,
+        sasl_mechanism: str | None = None,
+        sasl_credentials: str | None = None,
     ) -> None:
         """Bind to LDAP server.
 
@@ -767,9 +770,10 @@ class LDAPConnection:
 
         :param bind_dn: Bind DN
         :param bind_pw: Bind password
-        :param host: LDAP Host
-        :param port: LDAP Port
+        :param method: Authentication method (ANONYMOUS, SIMPLE, SASL, NTLM)
         :param timeout: Timeout for bind operation in seconds
+        :param sasl_mechanism: SASL mechanism to use (e.g. 'DIGEST-MD5', 'GSSAPI')
+        :param sasl_credentials: SASL credentials for the chosen mechanism
         :raises LDAPBindError: If credentials are invalid
         """
         # Create proto if its not created already
@@ -813,6 +817,24 @@ class LDAPConnection:
                 self.server.version,
                 "SICILY_PACKAGE_DISCOVERY",
                 ntlm_client,  # type: ignore
+            )
+
+        elif method == "SASL":
+            
+            bind_req = BindRequest()
+            bind_req["version"] = Version(3)
+            bind_req["name"] = bind_dn
+            
+            sasl_creds = SaslCredentials()
+            sasl_creds["mechanism"] = sasl_mechanism
+            if sasl_credentials:
+                sasl_creds["credentials"] = sasl_credentials
+            
+            bind_req["authentication"] = (
+                AuthenticationChoice().setComponentByName(
+                    "sasl",
+                    sasl_creds,
+                )
             )
 
         else:

@@ -371,12 +371,7 @@ class SearchResult:
 class SaslCreds(ABC):
     """Base class for SASL credentials."""
 
-    @property
-    @abstractmethod
-    def sasl_mechanism(
-        self,
-    ) -> Literal["PLAIN", "DIGEST-MD5", "GSSAPI", "EXTERNAL"]:
-        """Get SASL mechanism name."""
+    sasl_mechanism: Literal["PLAIN", "DIGEST-MD5", "GSSAPI", "EXTERNAL"]
 
     @abstractmethod
     def encode(self) -> str:
@@ -386,10 +381,7 @@ class SaslCreds(ABC):
 class PlainSaslCreds(SaslCreds):
     """SASL credentials implementation for PLAIN authentication."""
 
-    @property
-    def sasl_mechanism(self) -> Literal["PLAIN"]:
-        """Get SASL mechanism name."""
-        return "PLAIN"
+    sasl_mechanism = "PLAIN"
 
     def __init__(self, username: str, password: str) -> None:
         """Initialize SASL credentials.

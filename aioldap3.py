@@ -395,7 +395,8 @@ class PlainSaslCreds(SaslCreds):
     def encode(self) -> str:
         """Encode credentials for SASL authentication.
 
-        :return: Credentials string in format "username\x00username\x00password"
+        :return: Credentials string in format
+            "username\x00username\x00password"
         """
         return f"{self.username}\x00{self.username}\x00{self.password}"
 
@@ -804,7 +805,8 @@ class LDAPConnection:
         :param bind_pw: Bind password
         :param method: Authentication method (ANONYMOUS, SIMPLE, SASL, NTLM)
         :param timeout: Timeout for bind operation in seconds
-        :param sasl_credentials: SASL credentials object implementing SaslCreds interface
+        :param sasl_credentials: SASL credentials
+            object implementing SaslCreds interface
         :raises LDAPBindError: If credentials are invalid
         """
         # Create proto if its not created already
@@ -1424,7 +1426,8 @@ class LDAPConnection:
 
         if res.data["result"] != 0:
             error_msg = (
-                f"Password modification failed: {res.data.get('message', 'Unknown error')} "
+                "Password modification failed: "
+                + f"{res.data.get('message', 'Unknown error')} "
                 f"(result code: {res.data.get('result')}, "
                 f"description: {res.data.get('description')})"
             )

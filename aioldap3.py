@@ -256,6 +256,7 @@ from dataclasses import dataclass, field
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, AsyncGenerator, Callable, Literal, cast
 
+from ldap3 import PLAIN
 from ldap3.operation.add import add_operation
 from ldap3.operation.bind import bind_operation, bind_response_to_dict_fast
 from ldap3.operation.delete import delete_operation
@@ -371,7 +372,12 @@ class SearchResult:
 class SaslCreds(ABC):
     """Base class for SASL credentials."""
 
-    sasl_mechanism: Literal["PLAIN", "DIGEST-MD5", "GSSAPI", "EXTERNAL"]
+    @property
+    @abstractmethod
+    def sasl_mechanism(
+        self,
+    ) -> Literal["PLAIN", "DIGEST-MD5", "GSSAPI", "EXTERNAL"]:
+        """Return the SASL mechanism name."""
 
     @abstractmethod
     def encode(self) -> str:
@@ -381,7 +387,7 @@ class SaslCreds(ABC):
 class PlainSaslCreds(SaslCreds):
     """SASL credentials implementation for PLAIN authentication."""
 
-    sasl_mechanism = "PLAIN"
+    sasl_mechanism: Literal["PLAIN"] = PLAIN
 
     def __init__(self, username: str, password: str) -> None:
         """Initialize SASL credentials.
@@ -849,7 +855,7 @@ class LDAPConnection:
             bind_req = bind_operation(
                 self.server.version,
                 "SICILY_PACKAGE_DISCOVERY",
-                ntlm_client,  # type: ignore
+                ntlm_client,
             )
 
         elif method == "SASL":
@@ -1426,8 +1432,8 @@ class LDAPConnection:
 
         if res.data["result"] != 0:
             error_msg = (
-                "Password modification failed: "
-                + f"{res.data.get('message', 'Unknown error')} "
+                f"Password modification failed: "
+                f"{res.data.get('message', 'Unknown error')} "
                 f"(result code: {res.data.get('result')}, "
                 f"description: {res.data.get('description')})"
             )

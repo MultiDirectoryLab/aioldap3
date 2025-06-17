@@ -373,36 +373,32 @@ class SaslCreds(ABC):
 
     @property
     @abstractmethod
-    def sasl_mechanism(self) -> str:
+    def sasl_mechanism(
+        self,
+    ) -> Literal["PLAIN", "DIGEST-MD5", "GSSAPI", "EXTERNAL"]:
         """Get SASL mechanism name."""
 
     @abstractmethod
     def encode(self) -> str:
-        """Encode credentials for SASL authentication.
-
-        :return: Base64 encoded credentials string
-        """
+        """Encode credentials for SASL authentication."""
 
 
-class SimpleSaslCreds(SaslCreds):
-    """Simple SASL credentials implementation for PLAIN authentication."""
+class PlainSaslCreds(SaslCreds):
+    """SASL credentials implementation for PLAIN authentication."""
+
+    @property
+    def sasl_mechanism(self) -> Literal["PLAIN"]:
+        """Get SASL mechanism name."""
+        return "PLAIN"
 
     def __init__(self, username: str, password: str) -> None:
-        """Initialize Simple SASL credentials.
+        """Initialize SASL credentials.
 
         :param username: Username for authentication
         :param password: Password for authentication
         """
         self.username = username
         self.password = password
-
-    @property
-    def sasl_mechanism(self) -> Literal["PLAIN"]:
-        """Get SASL mechanism name.
-
-        :return: The SASL mechanism name "PLAIN"
-        """
-        return "PLAIN"
 
     def encode(self) -> str:
         """Encode credentials for SASL authentication.

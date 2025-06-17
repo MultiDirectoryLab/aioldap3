@@ -249,12 +249,14 @@ import asyncio
 import asyncio.sslproto
 import logging
 import ssl
+from abc import ABC, abstractmethod
 from contextlib import suppress
 from copy import deepcopy
 from dataclasses import dataclass, field
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, AsyncGenerator, Callable, Literal, cast
 
+from ldap3 import PLAIN
 from ldap3.operation.add import add_operation
 from ldap3.operation.bind import bind_operation, bind_response_to_dict_fast
 from ldap3.operation.delete import delete_operation
@@ -278,6 +280,7 @@ from ldap3.protocol.rfc4511 import (
     LDAPMessage,
     MessageID,
     ProtocolOp,
+    SaslCredentials,
     Sequence,
     Simple,
     UnbindRequest,
@@ -364,6 +367,44 @@ class SearchResult:
     entries: EntryType
     refs: list[Any]
     pagination: bool | None
+
+
+class SaslCreds(ABC):
+    """Base class for SASL credentials."""
+
+    @property
+    @abstractmethod
+    def sasl_mechanism(
+        self,
+    ) -> Literal["PLAIN", "DIGEST-MD5", "GSSAPI", "EXTERNAL"]:
+        """Return the SASL mechanism name."""
+
+    @abstractmethod
+    def encode(self) -> str:
+        """Encode credentials for SASL authentication."""
+
+
+class PlainSaslCreds(SaslCreds):
+    """SASL credentials implementation for PLAIN authentication."""
+
+    sasl_mechanism: Literal["PLAIN"] = PLAIN
+
+    def __init__(self, username: str, password: str) -> None:
+        """Initialize SASL credentials.
+
+        :param username: Username for authentication
+        :param password: Password for authentication
+        """
+        self.username = username
+        self.password = password
+
+    def encode(self) -> str:
+        """Encode credentials for SASL authentication.
+
+        :return: Credentials string in format
+            "username\x00username\x00password"
+        """
+        return f"{self.username}\x00{self.username}\x00{self.password}"
 
 
 @dataclass
@@ -760,6 +801,7 @@ class LDAPConnection:
         bind_pw: str | None = None,
         method: Literal["ANONYMOUS", "SIMPLE", "SASL", "NTLM"] = "SIMPLE",
         timeout: int | float | None = None,
+        sasl_credentials: SaslCreds | None = None,
     ) -> None:
         """Bind to LDAP server.
 
@@ -767,9 +809,10 @@ class LDAPConnection:
 
         :param bind_dn: Bind DN
         :param bind_pw: Bind password
-        :param host: LDAP Host
-        :param port: LDAP Port
+        :param method: Authentication method (ANONYMOUS, SIMPLE, SASL, NTLM)
         :param timeout: Timeout for bind operation in seconds
+        :param sasl_credentials: SASL credentials
+            object implementing SaslCreds interface
         :raises LDAPBindError: If credentials are invalid
         """
         # Create proto if its not created already
@@ -812,7 +855,29 @@ class LDAPConnection:
             bind_req = bind_operation(
                 self.server.version,
                 "SICILY_PACKAGE_DISCOVERY",
-                ntlm_client,  # type: ignore
+                ntlm_client,
+            )
+
+        elif method == "SASL":
+            if not sasl_credentials:
+                raise LDAPBindError(
+                    "SASL credentials must be provided for SASL authentication"
+                )
+
+            bind_req = BindRequest()
+            bind_req["version"] = Version(3)
+            bind_req["name"] = bind_dn
+
+            # Create SASL credentials
+            sasl_creds = SaslCredentials()
+            sasl_creds["mechanism"] = sasl_credentials.sasl_mechanism
+            sasl_creds["credentials"] = sasl_credentials.encode()
+
+            bind_req["authentication"] = (
+                AuthenticationChoice().setComponentByName(
+                    "sasl",
+                    sasl_creds,
+                )
             )
 
         else:
@@ -1058,8 +1123,10 @@ class LDAPConnection:
         with suppress(asyncio.TimeoutError):
             await asyncio.wait_for(resp.wait(), timeout=0)
 
-        # If the underlying transport is closing, remove references to it.
-        if self._proto.transport is None or self._proto.transport.is_closing():
+        # Cleanup transport and protocol
+        if not (
+            self._proto.transport is None or self._proto.transport.is_closing()
+        ):
             del self._proto
 
     async def start_tls(
@@ -1311,7 +1378,7 @@ class LDAPConnection:
     @property
     def is_bound(self) -> bool:
         """Check if bound."""
-        return self._proto is not None and self._proto.is_bound
+        return hasattr(self, "_proto") and self._proto.is_bound
 
     async def get_root_dse(self) -> SearchResult:
         """Get rootDSE from server."""
@@ -1365,7 +1432,8 @@ class LDAPConnection:
 
         if res.data["result"] != 0:
             error_msg = (
-                f"Password modification failed: {res.data.get('message', 'Unknown error')} "
+                f"Password modification failed: "
+                f"{res.data.get('message', 'Unknown error')} "
                 f"(result code: {res.data.get('result')}, "
                 f"description: {res.data.get('description')})"
             )

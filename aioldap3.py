@@ -1392,8 +1392,8 @@ class LDAPConnection:
     async def modify_password(
         self,
         new_password: str,
-        user_dn: str,
-        old_password: str,
+        user_dn: str | None,
+        old_password: str | None,
     ) -> None:
         """Modify user password using LDAP password modify extended operation.
 
@@ -1415,8 +1415,13 @@ class LDAPConnection:
             raise LDAPBindError("Must be bound to modify password")
 
         request_value = PasswdModifyRequestValue()
-        request_value.setComponentByName("userIdentity", user_dn)
-        request_value.setComponentByName("oldPasswd", old_password)
+
+        if user_dn is not None:
+            request_value.setComponentByName("userIdentity", user_dn)
+
+        if old_password is not None:
+            request_value.setComponentByName("oldPasswd", old_password)
+
         request_value.setComponentByName("newPasswd", new_password)
 
         psw_change_oid: Literal["1.3.6.1.4.1.4203.1.11.1"] = (

@@ -1392,8 +1392,8 @@ class LDAPConnection:
     async def modify_password(
         self,
         new_password: str,
-        user_dn: str | None,
-        old_password: str | None,
+        user_dn: str | None = None,
+        old_password: str | None = None,
     ) -> None:
         """Modify user password using LDAP password modify extended operation.
 

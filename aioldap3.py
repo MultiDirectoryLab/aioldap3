@@ -260,10 +260,7 @@ from ldap3 import PLAIN
 from ldap3.operation.add import add_operation
 from ldap3.operation.bind import bind_operation, bind_response_to_dict_fast
 from ldap3.operation.delete import delete_operation
-from ldap3.operation.extended import (
-    extended_operation,
-    extended_response_to_dict_fast,
-)
+from ldap3.operation.extended import extended_operation, extended_response_to_dict_fast
 from ldap3.operation.modify import modify_operation
 from ldap3.operation.search import (
     search_operation,
@@ -288,11 +285,7 @@ from ldap3.protocol.rfc4511 import (
 )
 from ldap3.protocol.rfc4512 import SchemaInfo
 from ldap3.strategy.base import BaseStrategy  # Consider moving this to utils
-from ldap3.utils.asn1 import (
-    decode_message_fast,
-    encode,
-    ldap_result_to_dict_fast,
-)
+from ldap3.utils.asn1 import decode_message_fast, encode, ldap_result_to_dict_fast
 from ldap3.utils.conv import to_unicode
 from ldap3.utils.dn import safe_dn
 from ldap3.utils.ntlm import NtlmClient
@@ -357,9 +350,7 @@ class LDAPExtendedError(LDAPError):  # noqa: D101
 class OperationNotSupportedError(Exception):  # noqa: D101
     def __init__(self, code: str | int) -> None:
         """Set a new message."""
-        super().__init__(
-            f"This LDAP operation with code {code} is not supported"
-        )
+        super().__init__(f"This LDAP operation with code {code} is not supported")
 
 
 @dataclass(frozen=True)
@@ -414,9 +405,7 @@ class Server:
     host: str
     port: int = 389
     use_ssl: bool = False
-    ssl_context: ssl.SSLContext | None = field(
-        default_factory=ssl.create_default_context
-    )
+    ssl_context: ssl.SSLContext | None = field(default_factory=ssl.create_default_context)
     timeout: float | int | None = None
     version: Literal[2, 3] = 3
 
@@ -477,9 +466,7 @@ class LDAPClientProtocol(asyncio.Protocol):
         if unbind:
             msg_id = -1
 
-        response = LDAPResponse(
-            onfinish=lambda: self._remove_msg_id_response(msg_id)
-        )
+        response = LDAPResponse(onfinish=lambda: self._remove_msg_id_response(msg_id))
         self.responses[msg_id] = response
 
         payload = encode(msg)
@@ -524,10 +511,7 @@ class LDAPClientProtocol(asyncio.Protocol):
         logger.debug(f"data_received: msg_length {length}")
 
         while len(self.unprocessed) >= length != -1:
-            logger.debug(
-                "data_received: appended msg, "
-                f"len: {len(self.unprocessed[:length])}"
-            )
+            logger.debug(f"data_received: appended msg, len: {len(self.unprocessed[:length])}")
             self.messages.append(self.unprocessed[:length])
             self.unprocessed = self.unprocessed[length:]
 
@@ -540,10 +524,7 @@ class LDAPClientProtocol(asyncio.Protocol):
             try:
                 msg_asn = decode_message_fast(msg)
             except Exception as exc:
-                logger.warning(
-                    "data_received: Caught exception "
-                    f"whilst decoding message {exc}"
-                )
+                logger.warning(f"data_received: Caught exception whilst decoding message {exc}")
                 continue
             msg_id = msg_asn["messageID"]
             logger.debug(f"data_received: Decoded message, id {msg_id}")
@@ -561,9 +542,7 @@ class LDAPClientProtocol(asyncio.Protocol):
 
             elif msg_asn["protocolOp"] == 4:  # Search response, can be N,
                 is_list = True
-                msg_data = search_result_entry_response_to_dict_fast(
-                    msg_asn["payload"], None, None, False
-                )
+                msg_data = search_result_entry_response_to_dict_fast(msg_asn["payload"], None, None, False)
                 msg_log = f"data_received: id {msg_id}, search response"
 
             elif msg_asn["protocolOp"] == 5:  # Search result done
@@ -575,10 +554,7 @@ class LDAPClientProtocol(asyncio.Protocol):
                 if not controls:
                     controls = []
 
-                controls = [
-                    BaseStrategy.decode_control_fast(control[3])
-                    for control in controls
-                ]
+                controls = [BaseStrategy.decode_control_fast(control[3]) for control in controls]
                 msg_additional = {
                     "asn": msg_asn,
                     "controls": {item[0]: item[1] for item in controls},
@@ -603,9 +579,7 @@ class LDAPClientProtocol(asyncio.Protocol):
 
             elif msg_asn["protocolOp"] == 19:
                 msg_data = None
-                msg_refs = search_result_reference_response_to_dict_fast(
-                    msg_asn["payload"]
-                )
+                msg_refs = search_result_reference_response_to_dict_fast(msg_asn["payload"])
                 msg_log = f"data_received: id {msg_id}, refs response"
 
             elif msg_asn["protocolOp"] == 24:
@@ -649,9 +623,7 @@ class LDAPClientProtocol(asyncio.Protocol):
         self._is_bound = False
         for key, response in self.responses.items():
             if key != "unbind":
-                response.exception = ConnectionResetError(
-                    "LDAP Server dropped the connection"
-                )
+                response.exception = ConnectionResetError("LDAP Server dropped the connection")
             response.finished.set()
 
         if self._original_transport is not None:
@@ -697,9 +669,7 @@ class LDAPClientProtocol(asyncio.Protocol):
         """Create LDAP message."""
         ldap_message = LDAPMessage()
         ldap_message["messageID"] = MessageID(message_id)
-        ldap_message["protocolOp"] = ProtocolOp().setComponentByName(
-            obj_name, obj
-        )
+        ldap_message["protocolOp"] = ProtocolOp().setComponentByName(obj_name, obj)
 
         msg_controls = build_controls_list(controls)
         if msg_controls:
@@ -839,11 +809,9 @@ class LDAPConnection:
             bind_req = BindRequest()
             bind_req["version"] = Version(3)
             bind_req["name"] = bind_dn
-            bind_req["authentication"] = (
-                AuthenticationChoice().setComponentByName(
-                    "simple",
-                    Simple(bind_pw),
-                )
+            bind_req["authentication"] = AuthenticationChoice().setComponentByName(
+                "simple",
+                Simple(bind_pw),
             )
 
         elif method == "NTLM":
@@ -860,9 +828,7 @@ class LDAPConnection:
 
         elif method == "SASL":
             if not sasl_credentials:
-                raise LDAPBindError(
-                    "SASL credentials must be provided for SASL authentication"
-                )
+                raise LDAPBindError("SASL credentials must be provided for SASL authentication")
 
             bind_req = BindRequest()
             bind_req["version"] = Version(3)
@@ -873,11 +839,9 @@ class LDAPConnection:
             sasl_creds["mechanism"] = sasl_credentials.sasl_mechanism
             sasl_creds["credentials"] = sasl_credentials.encode()
 
-            bind_req["authentication"] = (
-                AuthenticationChoice().setComponentByName(
-                    "sasl",
-                    sasl_creds,
-                )
+            bind_req["authentication"] = AuthenticationChoice().setComponentByName(
+                "sasl",
+                sasl_creds,
             )
 
         else:
@@ -890,9 +854,7 @@ class LDAPConnection:
         msg_id = self._next_msg_id
 
         # Generate ASN1 form of LDAP bind request
-        ldap_msg = LDAPClientProtocol.encapsulate_ldap_message(
-            msg_id, "bindRequest", bind_req
-        )
+        ldap_msg = LDAPClientProtocol.encapsulate_ldap_message(msg_id, "bindRequest", bind_req)
 
         # Send request to LDAP server, as multiple LDAP queries
         # can run simultaneously, were given an object to wait on
@@ -1007,9 +969,7 @@ class LDAPConnection:
             await resp.wait()
 
         try:
-            cookie = resp.additional["controls"]["1.2.840.113556.1.4.319"][
-                "value"
-            ]["cookie"]
+            cookie = resp.additional["controls"]["1.2.840.113556.1.4.319"]["value"]["cookie"]
         except KeyError:
             cookie = None
 
@@ -1114,9 +1074,7 @@ class LDAPConnection:
         self._unbind_in_progress = True
 
         # Generate final LDAP ASN message
-        ldap_msg = LDAPClientProtocol.encapsulate_ldap_message(
-            msg_id, "unbindRequest", unbind_req
-        )
+        ldap_msg = LDAPClientProtocol.encapsulate_ldap_message(msg_id, "unbindRequest", unbind_req)
         resp = self._proto.send(ldap_msg, unbind=True)
 
         # Unbind is a special case, we dont get a response
@@ -1124,9 +1082,7 @@ class LDAPConnection:
             await asyncio.wait_for(resp.wait(), timeout=0)
 
         # Cleanup transport and protocol
-        if not (
-            self._proto.transport is None or self._proto.transport.is_closing()
-        ):
+        if not (self._proto.transport is None or self._proto.transport.is_closing()):
             del self._proto
 
     async def start_tls(
@@ -1149,15 +1105,9 @@ class LDAPConnection:
         resp = await self.extended("1.3.6.1.4.1.1466.20037")
 
         if resp.data["description"] != "success":
-            raise LDAPStartTlsError(
-                "Server doesnt want us to use TLS. {}".format(
-                    resp.data.get("message")
-                )
-            )
+            raise LDAPStartTlsError("Server doesnt want us to use TLS. {}".format(resp.data.get("message")))
 
-        await self._proto.start_tls(
-            ctx or cast("ssl.SSLContext", self.server.ssl_context)
-        )
+        await self._proto.start_tls(ctx or cast("ssl.SSLContext", self.server.ssl_context))
 
     async def extended(
         self,
@@ -1168,15 +1118,11 @@ class LDAPConnection:
     ) -> Any:
         """Perform an extended operation."""
         # Create unbind request
-        extended_req = extended_operation(
-            request_name, request_value, no_encode=no_encode
-        )
+        extended_req = extended_operation(request_name, request_value, no_encode=no_encode)
         msg_id = self._next_msg_id
 
         # Generate final LDAP ASN message
-        ldap_msg = LDAPClientProtocol.encapsulate_ldap_message(
-            msg_id, "extendedReq", extended_req, controls=controls
-        )
+        ldap_msg = LDAPClientProtocol.encapsulate_ldap_message(msg_id, "extendedReq", extended_req, controls=controls)
 
         resp = self._proto.send(ldap_msg)
         await resp.wait()
@@ -1209,15 +1155,11 @@ class LDAPConnection:
         if not changes:
             raise LDAPChangeError("Changes dict cannot be empty")
 
-        modify_req = modify_operation(
-            dn, changes, auto_encode, None, validator=None, check_names=False
-        )
+        modify_req = modify_operation(dn, changes, auto_encode, None, validator=None, check_names=False)
         msg_id = self._next_msg_id
 
         # Generate final LDAP ASN message
-        ldap_msg = LDAPClientProtocol.encapsulate_ldap_message(
-            msg_id, "modifyRequest", modify_req, controls=controls
-        )
+        ldap_msg = LDAPClientProtocol.encapsulate_ldap_message(msg_id, "modifyRequest", modify_req, controls=controls)
 
         resp = self._proto.send(ldap_msg)
         await resp.wait()
@@ -1245,16 +1187,12 @@ class LDAPConnection:
         msg_id = self._next_msg_id
 
         # Generate final LDAP ASN message
-        ldap_msg = LDAPClientProtocol.encapsulate_ldap_message(
-            msg_id, "delRequest", del_req, controls=controls
-        )
+        ldap_msg = LDAPClientProtocol.encapsulate_ldap_message(msg_id, "delRequest", del_req, controls=controls)
 
         resp = self._proto.send(ldap_msg)
         await resp.wait()
 
-        if resp.data["result"] != 0 and not (
-            ignore_no_exist and resp.data["result"] == 32
-        ):
+        if resp.data["result"] != 0 and not (ignore_no_exist and resp.data["result"] == 32):
             raise LDAPDeleteError(
                 "Failed to modify dn {}. Msg {} {} {}".format(
                     dn,
@@ -1317,9 +1255,7 @@ class LDAPConnection:
         # and any we've found in attributes.
         # Converts objectclass to unicode
         # in case of bytes value, also removes dupes
-        attr_object_class = list(
-            {to_unicode(object_class) for object_class in attr_object_class}
-        )
+        attr_object_class = list({to_unicode(object_class) for object_class in attr_object_class})
         _attributes[object_class_attr_name] = attr_object_class
 
         add_request = add_operation(
@@ -1392,8 +1328,8 @@ class LDAPConnection:
     async def modify_password(
         self,
         new_password: str,
-        user_dn: str | None,
-        old_password: str | None,
+        user_dn: str | None = None,
+        old_password: str | None = None,
     ) -> None:
         """Modify user password using LDAP password modify extended operation.
 
@@ -1424,9 +1360,7 @@ class LDAPConnection:
 
         request_value.setComponentByName("newPasswd", new_password)
 
-        psw_change_oid: Literal["1.3.6.1.4.1.4203.1.11.1"] = (
-            "1.3.6.1.4.1.4203.1.11.1"
-        )
+        psw_change_oid: Literal["1.3.6.1.4.1.4203.1.11.1"] = "1.3.6.1.4.1.4203.1.11.1"
 
         logger.debug(f"Attempting to modify password for user: {user_dn}")
 

@@ -904,16 +904,18 @@ class LDAPConnection:
 
     async def sasl_bind(self) -> LDAPResponse:
         """Perform SASL bind."""
+        if self._sasl_in_progress:
+            raise LDAPBindError("SASL bind already in progress")
+
         logger.debug(f"start SASL BIND operation to {self.server.host}")
-        if not self._sasl_in_progress:
-            self._sasl_in_progress = True
-            try:
-                if self._sasl_mechanism == "GSSAPI":
-                    result = await self.sasl_gssapi()
-                else:
-                    raise LDAPBindError("Unsupported SASL mechanism")
-            finally:
-                self._sasl_in_progress = False
+        self._sasl_in_progress = True
+        try:
+            if self._sasl_mechanism == "GSSAPI":
+                result = await self.sasl_gssapi()
+            else:
+                raise LDAPBindError("Unsupported SASL mechanism")
+        finally:
+            self._sasl_in_progress = False
 
         logger.debug(f"done SASL BIND operation to {self.server.host}")
         self._proto.gssapi_authenticated = True

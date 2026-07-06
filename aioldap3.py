@@ -411,7 +411,7 @@ class PlainSaslCreds(SaslCreds):
 
 
 class GSSAPISL(IntEnum):
-    """GSSAPI security layers, described in in RFC4752 section 3.3."""
+    """GSSAPI security layers, described in RFC4752 section 3.3."""
 
     NO_SECURITY = 1
     INTEGRITY_PROTECTION = 2

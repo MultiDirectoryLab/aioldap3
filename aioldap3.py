@@ -964,7 +964,7 @@ class LDAPConnection:
                     pass
 
             unwrapped_token = ctx.unwrap(in_token)
-            final_message = self.proccess_end_token(unwrapped_token.message)
+            final_message = self.process_end_token(unwrapped_token.message)
 
             out_token = ctx.wrap(final_message, False)
             return await self.send_sasl_negotiation(out_token.message)
@@ -1023,7 +1023,7 @@ class LDAPConnection:
         else:
             return GSSAPISL.NO_SECURITY
 
-    def proccess_end_token(self, token: bytes) -> bytes:
+    def process_end_token(self, token: bytes) -> bytes:
         """Process the response we got at the end of our SASL negotiation."""
         if len(token) != 4:
             raise LDAPBindError("Incorrect token length")

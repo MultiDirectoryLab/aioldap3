@@ -817,10 +817,10 @@ class LDAPConnection:
         user: str | None = None,
         password: str | None = None,
         sasl_mechanism: str | None = None,
-        cred_store: dict[bytes | str, bytes | str] | None = None,
-        cred_token: bytes | None = None,
+        sasl_cred_store: dict[bytes | str, bytes | str] | None = None,
+        sasl_cred_token: bytes | None = None,
         loop: asyncio.AbstractEventLoop | None = None,
-        max_buffer_size: int = 2048,
+        sasl_max_buffer_size: int = 2048,
     ) -> None:
         """Set server, user and pw."""
         self._responses: dict[str, LDAPResponse] = {}
@@ -828,11 +828,11 @@ class LDAPConnection:
 
         self._sasl_in_progress = False
         self._sasl_mechanism = sasl_mechanism
-        self._cred_store = cred_store
-        self._cred_token = cred_token
+        self._sasl_cred_store = sasl_cred_store
+        self._sasl_cred_token = sasl_cred_token
+        self._sasl_max_buffer_size = sasl_max_buffer_size
 
         self.loop = loop or asyncio.get_running_loop()
-        self.max_buffer_size = max_buffer_size
 
         self.server = server
         self.bind_dn = user
@@ -923,24 +923,27 @@ class LDAPConnection:
 
         return result
 
+    def _create_sasl_credentials(self) -> gssapi.Credentials:
+        if self._sasl_cred_token:
+            return gssapi.Credentials(token=self._sasl_cred_token)
+
+        if not self.bind_dn:
+            raise LDAPBindError(
+                "bind_dn must be set when using GSSAPI without cred_token"
+            )
+
+        return gssapi.Credentials(
+            name=gssapi.Name(self.bind_dn),
+            usage="initiate",
+            store=self._sasl_cred_store,
+        )
+
     async def sasl_gssapi(self) -> LDAPResponse:
         """Perform SASL GSSAPI bind using the Kerberos v5 mechanism."""
         target_name = gssapi.Name(
             "ldap@" + self.server.host, gssapi.NameType.hostbased_service
         )
-
-        if self._cred_token:
-            creds = gssapi.Credentials(token=self._cred_token)
-        else:
-            if not self.bind_dn:
-                raise LDAPBindError(
-                    "bind_dn must be set when using GSSAPI without cred_token"
-                )
-            creds = gssapi.Credentials(
-                name=gssapi.Name(self.bind_dn),
-                usage="initiate",
-                store=self._cred_store,
-            )
+        creds = self._create_sasl_credentials()
 
         ctx = gssapi.SecurityContext(
             name=target_name,
@@ -1044,7 +1047,7 @@ class LDAPConnection:
 
         message = (
             self._proto.gssapi_security_layer.to_bytes()
-            + self.max_buffer_size.to_bytes(length=3)
+            + self._sasl_max_buffer_size.to_bytes(length=3)
         )
 
         return message

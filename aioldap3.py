@@ -920,19 +920,6 @@ class LDAPConnection:
 
         return result
 
-    def init_gssapi_credentials(
-        self,
-        name: gssapi.Name,
-        usage: str,
-        store: dict[bytes | str, bytes | str] | None,
-    ) -> gssapi.Credentials:
-        """Initialize GSSAPI credentials."""
-        return gssapi.Credentials(
-            name=name,
-            usage=usage,
-            store=store,
-        )
-
     async def sasl_gssapi(self) -> LDAPResponse:
         """Perform SASL GSSAPI bind using the Kerberos v5 mechanism."""
         target_name = gssapi.Name(

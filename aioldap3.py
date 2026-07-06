@@ -903,12 +903,10 @@ class LDAPConnection:
         if self._cred_token:
             creds = gssapi.Credentials(token=self._cred_token)
         else:
-            creds = await self.loop.run_in_executor(
-                None,
-                self.init_gssapi_credentials,
-                gssapi.Name(self.bind_dn),
-                "initiate",
-                self._cred_store,
+            creds = gssapi.Credentials(
+                name=gssapi.Name(self.bind_dn),
+                usage="initiate",
+                store=self._cred_store,
             )
 
         ctx = gssapi.SecurityContext(
@@ -925,11 +923,7 @@ class LDAPConnection:
         try:
             while True:
                 logger.debug("Sending SASL token")
-                out_token = await self.loop.run_in_executor(
-                    None,
-                    ctx.step,
-                    in_token,
-                )
+                out_token = ctx.step(in_token)
                 if out_token is None:
                     out_token = b""
                 result = await self.send_sasl_negotiation(out_token)

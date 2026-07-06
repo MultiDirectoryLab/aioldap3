@@ -932,6 +932,10 @@ class LDAPConnection:
         if self._cred_token:
             creds = gssapi.Credentials(token=self._cred_token)
         else:
+            if not self.bind_dn:
+                raise LDAPBindError(
+                    "bind_dn must be set when using GSSAPI without cred_token"
+                )
             creds = gssapi.Credentials(
                 name=gssapi.Name(self.bind_dn),
                 usage="initiate",

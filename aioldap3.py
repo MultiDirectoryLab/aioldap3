@@ -251,7 +251,7 @@ import logging
 import ssl
 from abc import ABC, abstractmethod
 from contextlib import suppress
-from copy import deepcopy
+from copy import copy, deepcopy
 from dataclasses import dataclass, field
 from enum import IntEnum
 from types import TracebackType
@@ -616,7 +616,8 @@ class LDAPClientProtocol(asyncio.Protocol):
             self.unwrapped_data += self._unwrap_request(data)
             if self._pending_data:
                 return
-            self.unprocessed = self.unwrapped_data
+            self.unprocessed = copy(self.unwrapped_data)
+            self.unwrapped_data = b""
 
         length = BaseStrategy.compute_ldap_message_size(self.unprocessed)
         logger.debug(f"data_received: msg_length {length}")

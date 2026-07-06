@@ -485,6 +485,8 @@ class LDAPClientProtocol(asyncio.Protocol):
         self._is_bound = False
 
         self.unprocessed = b""
+        self.unwrapped_data = b""
+        self._pending_data = b""
         self.messages: list[bytes] = []
 
         self.responses: dict[int, LDAPResponse] = {}
@@ -549,37 +551,76 @@ class LDAPClientProtocol(asyncio.Protocol):
         return super().eof_received()  # type: ignore
 
     def _unwrap_request(self, data: bytes) -> bytes:
-        if self.gssapi_security_layer in (
+        if self.gssapi_security_layer not in (
             GSSAPISL.INTEGRITY_PROTECTION,
             GSSAPISL.CONFIDENTIALITY,
         ):
-            sasl_buffer_length = int.from_bytes(data[:4], "big")
-            sasl_buffer = data[4:]
+            return data
 
-            if len(sasl_buffer) != sasl_buffer_length:
-                raise ConnectionAbortedError("SASL buffer length mismatch")
+        if not self.gssapi_security_context:
+            logger.error("GSSAPI security context not found")
+            raise ConnectionAbortedError("GSSAPI security context not found")
 
-            if not self.gssapi_security_context:
+        result = b""
+        buffer = data
+
+        while len(buffer) >= 4:
+            sasl_buffer_length = int.from_bytes(buffer[:4], "big")
+
+            if sasl_buffer_length > 10 * 1024 * 1024:  # 10 MB
+                logger.error(
+                    f"Invalid sasl buffer length: {sasl_buffer_length}"
+                )
                 raise ConnectionAbortedError(
-                    "GSSAPI security context not found"
+                    f"Invalid SASL buffer length: {sasl_buffer_length}"
                 )
 
-            unwrap_data = self.gssapi_security_context.unwrap(sasl_buffer)
-            return unwrap_data.message
-        return data
+            total_needed = 4 + sasl_buffer_length
+
+            if len(buffer) < total_needed:
+                self._pending_data = buffer
+                break
+
+            sasl_buffer = buffer[4:total_needed]
+            remaining = buffer[total_needed:]
+
+            try:
+                unwrap_data = self.gssapi_security_context.unwrap(sasl_buffer)
+                result += unwrap_data.message
+            except gssapi.exceptions.GSSError as e:
+                logger.error(f"GSSAPI unwrap failed at message: {e}")
+                raise ConnectionAbortedError(f"GSSAPI unwrap failed: {e}")
+
+            buffer = remaining
+
+        if buffer:
+            self._pending_data = buffer
+            logger.debug(f"Saved pending data: {len(buffer)} bytes")
+        else:
+            self._pending_data = b""
+
+        return result
 
     def data_received(  # noqa: C901
         self, data: bytes
     ) -> None:  # TODO: decompose
         """Check if message is full."""
         logger.debug(f"data_received: len {len(data)}")
+
+        if self._pending_data:
+            data = self._pending_data + data
+            self._pending_data = b""
+
         self.unprocessed += data
 
         if len(data) <= 0:
             return
 
         if self.gssapi_authenticated:
-            self.unprocessed = self._unwrap_request(self.unprocessed)
+            self.unwrapped_data += self._unwrap_request(data)
+            if self._pending_data:
+                return
+            self.unprocessed = self.unwrapped_data
 
         length = BaseStrategy.compute_ldap_message_size(self.unprocessed)
         logger.debug(f"data_received: msg_length {length}")
@@ -782,6 +823,7 @@ class LDAPConnection:
         cred_store: dict[bytes | str, bytes | str] | None = None,
         cred_token: bytes | None = None,
         loop: asyncio.AbstractEventLoop | None = None,
+        max_buffer_size: int = 2048,
     ) -> None:
         """Set server, user and pw."""
         self._responses: dict[str, LDAPResponse] = {}
@@ -793,6 +835,7 @@ class LDAPConnection:
         self._cred_token = cred_token
 
         self.loop = loop or asyncio.get_running_loop()
+        self.max_buffer_size = max_buffer_size
 
         self.server = server
         self.bind_dn = user
@@ -935,10 +978,9 @@ class LDAPConnection:
                     pass
 
             unwrapped_token = ctx.unwrap(in_token)
-            client_security_layers = self.proccess_end_token(
-                unwrapped_token.message
-            )
-            out_token = ctx.wrap(bytes(client_security_layers), False)
+            final_message = self.proccess_end_token(unwrapped_token.message)
+
+            out_token = ctx.wrap(final_message, False)
             return await self.send_sasl_negotiation(out_token.message)
         except gssapi.exceptions.GSSError as exc:
             await self.abort_sasl_negotiation()
@@ -985,6 +1027,9 @@ class LDAPConnection:
         return resp
 
     def _select_security_layer(self, server_sl: int) -> GSSAPISL:
+        if self.server.use_ssl:
+            return GSSAPISL.NO_SECURITY
+
         if server_sl & GSSAPISL.CONFIDENTIALITY:
             return GSSAPISL.CONFIDENTIALITY
         elif server_sl & GSSAPISL.INTEGRITY_PROTECTION:
@@ -992,7 +1037,7 @@ class LDAPConnection:
         else:
             return GSSAPISL.NO_SECURITY
 
-    def proccess_end_token(self, token: bytes) -> bytearray:
+    def proccess_end_token(self, token: bytes) -> bytes:
         """Process the response we got at the end of our SASL negotiation."""
         if len(token) != 4:
             raise LDAPBindError("Incorrect token length")
@@ -1007,10 +1052,12 @@ class LDAPConnection:
             server_security_layer
         )
 
-        client_security_layers = bytearray(
-            [int(self._proto.gssapi_security_layer), 0, 0, 0]
+        message = (
+            self._proto.gssapi_security_layer.to_bytes()
+            + self.max_buffer_size.to_bytes(length=3)
         )
-        return client_security_layers
+
+        return message
 
     async def bind(
         self,

@@ -819,6 +819,7 @@ class LDAPConnection:
         sasl_mechanism: str | None = None,
         sasl_cred_store: dict[bytes | str, bytes | str] | None = None,
         sasl_cred_token: bytes | None = None,
+        sasl_security_layer: int | None = None,
         loop: asyncio.AbstractEventLoop | None = None,
         sasl_max_buffer_size: int = 2048,
     ) -> None:
@@ -831,6 +832,7 @@ class LDAPConnection:
         self._sasl_cred_store = sasl_cred_store
         self._sasl_cred_token = sasl_cred_token
         self._sasl_max_buffer_size = sasl_max_buffer_size
+        self._sasl_security_layer = sasl_security_layer
 
         self.loop = loop or asyncio.get_running_loop()
 
@@ -1022,6 +1024,14 @@ class LDAPConnection:
     def _select_security_layer(self, server_sl: int) -> GSSAPISL:
         if self.server.use_ssl:
             return GSSAPISL.NO_SECURITY
+
+        if self._sasl_security_layer is not None:
+            if server_sl & self._sasl_security_layer:
+                return GSSAPISL(self._sasl_security_layer)
+            else:
+                raise LDAPBindError(
+                    "Server does not support the requested security layer"
+                )
 
         if server_sl & GSSAPISL.CONFIDENTIALITY:
             return GSSAPISL.CONFIDENTIALITY

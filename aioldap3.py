@@ -532,6 +532,16 @@ class LDAPClientProtocol(asyncio.Protocol):
         with suppress(KeyError):
             del self.responses[msg_id]
 
+    def _reset_gssapi_state(self, clear_buffers: bool = False) -> None:
+        self.gssapi_authenticated = False
+        self.gssapi_security_layer = None
+        self.gssapi_security_context = None
+
+        if clear_buffers:
+            self.unprocessed = b""
+            self.unwrapped_data = b""
+            self._pending_data = b""
+
     def connection_made(self, transport: asyncio.BaseTransport) -> None:
         """Set transport."""
         if self._original_transport is None:
@@ -744,6 +754,7 @@ class LDAPClientProtocol(asyncio.Protocol):
         logger.debug("Connection lost")
 
         self._is_bound = False
+        self._reset_gssapi_state(clear_buffers=True)
         for key, response in self.responses.items():
             if key != "unbind":
                 response.exception = ConnectionResetError(
@@ -859,8 +870,17 @@ class LDAPConnection:
         """Close conn."""
         self.close()
 
+    def _reset_gssapi_state(self, clear_buffers: bool = False) -> None:
+        self._sasl_in_progress = False
+        self._sasl_cred_token = None
+
+        if hasattr(self, "_proto"):
+            self._proto._reset_gssapi_state(clear_buffers=clear_buffers)
+
     def close(self) -> None:
         """Close conn."""
+        self._reset_gssapi_state(clear_buffers=True)
+
         if hasattr(self, "_proto"):
             with suppress(Exception):
                 if self._proto._original_transport:
@@ -977,8 +997,13 @@ class LDAPConnection:
             out_token = ctx.wrap(final_message, False)
             return await self.send_sasl_negotiation(out_token.message)
         except gssapi.exceptions.GSSError as exc:
-            await self.abort_sasl_negotiation()
+            with suppress(Exception):
+                await self.abort_sasl_negotiation()
+            self._reset_gssapi_state(clear_buffers=True)
             raise LDAPBindError(f"LDAP GSSAPI error: {exc}") from exc
+        except Exception:
+            self._reset_gssapi_state(clear_buffers=True)
+            raise
 
     async def abort_sasl_negotiation(self) -> None:
         """Abort the SASL negotiation."""
@@ -1150,8 +1175,9 @@ class LDAPConnection:
             resp = await self.sasl_bind()
 
             if resp.data["result"] != 0:
+                self._reset_gssapi_state(clear_buffers=True)
                 raise LDAPBindError("Invalid Credentials")
-            
+
             self._proto.gssapi_authenticated = True
             self._proto.is_bound = True
             return
@@ -1380,6 +1406,7 @@ class LDAPConnection:
         no msg_id, therefore we tell send() its a special case.
         """
         if not self.is_bound:
+            self._reset_gssapi_state(clear_buffers=True)
             return  # Exit quickly if were already unbound
 
         # Create unbind request
@@ -1398,6 +1425,7 @@ class LDAPConnection:
         with suppress(asyncio.TimeoutError):
             await asyncio.wait_for(resp.wait(), timeout=0)
 
+        self._reset_gssapi_state(clear_buffers=True)
         # Cleanup transport and protocol
         if not (
             self._proto.transport is None or self._proto.transport.is_closing()

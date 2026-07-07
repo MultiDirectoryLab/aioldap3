@@ -1461,6 +1461,7 @@ class LDAPConnection:
         await self._proto.start_tls(
             ctx or cast("ssl.SSLContext", self.server.ssl_context)
         )
+        self.server.use_ssl = True
 
     async def extended(
         self,

@@ -921,7 +921,6 @@ class LDAPConnection:
             self._sasl_in_progress = False
 
         logger.debug(f"done SASL BIND operation to {self.server.host}")
-        self._proto.gssapi_authenticated = True
 
         return result
 
@@ -1152,7 +1151,8 @@ class LDAPConnection:
 
             if resp.data["result"] != 0:
                 raise LDAPBindError("Invalid Credentials")
-
+            
+            self._proto.gssapi_authenticated = True
             self._proto.is_bound = True
             return
         else:

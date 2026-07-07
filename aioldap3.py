@@ -251,16 +251,22 @@ import logging
 import ssl
 from abc import ABC, abstractmethod
 from contextlib import suppress
-from copy import deepcopy
+from copy import copy, deepcopy
 from dataclasses import dataclass, field
+from enum import IntEnum
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, AsyncGenerator, Callable, Literal, cast
 
+import gssapi
+import gssapi.exceptions
 from ldap3 import PLAIN
 from ldap3.operation.add import add_operation
 from ldap3.operation.bind import bind_operation, bind_response_to_dict_fast
 from ldap3.operation.delete import delete_operation
-from ldap3.operation.extended import extended_operation, extended_response_to_dict_fast
+from ldap3.operation.extended import (
+    extended_operation,
+    extended_response_to_dict_fast,
+)
 from ldap3.operation.modify import modify_operation
 from ldap3.operation.search import (
     search_operation,
@@ -285,7 +291,11 @@ from ldap3.protocol.rfc4511 import (
 )
 from ldap3.protocol.rfc4512 import SchemaInfo
 from ldap3.strategy.base import BaseStrategy  # Consider moving this to utils
-from ldap3.utils.asn1 import decode_message_fast, encode, ldap_result_to_dict_fast
+from ldap3.utils.asn1 import (
+    decode_message_fast,
+    encode,
+    ldap_result_to_dict_fast,
+)
 from ldap3.utils.conv import to_unicode
 from ldap3.utils.dn import safe_dn
 from ldap3.utils.ntlm import NtlmClient
@@ -350,7 +360,9 @@ class LDAPExtendedError(LDAPError):  # noqa: D101
 class OperationNotSupportedError(Exception):  # noqa: D101
     def __init__(self, code: str | int) -> None:
         """Set a new message."""
-        super().__init__(f"This LDAP operation with code {code} is not supported")
+        super().__init__(
+            f"This LDAP operation with code {code} is not supported"
+        )
 
 
 @dataclass(frozen=True)
@@ -398,6 +410,14 @@ class PlainSaslCreds(SaslCreds):
         return f"{self.username}\x00{self.username}\x00{self.password}"
 
 
+class GSSAPISL(IntEnum):
+    """GSSAPI security layers, described in RFC4752 section 3.3."""
+
+    NO_SECURITY = 1
+    INTEGRITY_PROTECTION = 2
+    CONFIDENTIALITY = 4
+
+
 @dataclass
 class Server:
     """Server data container."""
@@ -405,7 +425,9 @@ class Server:
     host: str
     port: int = 389
     use_ssl: bool = False
-    ssl_context: ssl.SSLContext | None = field(default_factory=ssl.create_default_context)
+    ssl_context: ssl.SSLContext | None = field(
+        default_factory=ssl.create_default_context
+    )
     timeout: float | int | None = None
     version: Literal[2, 3] = 3
 
@@ -444,6 +466,10 @@ class LDAPResponse:
 class LDAPClientProtocol(asyncio.Protocol):
     """Protocol for client conn."""
 
+    gssapi_authenticated: bool = False
+    gssapi_security_layer: GSSAPISL | None = None
+    gssapi_security_context: gssapi.SecurityContext | None = None
+
     def __init__(self, loop: asyncio.AbstractEventLoop) -> None:
         """Set loop and transport."""
         self.loop = loop
@@ -455,9 +481,27 @@ class LDAPClientProtocol(asyncio.Protocol):
         self._is_bound = False
 
         self.unprocessed = b""
+        self.unwrapped_data = b""
+        self._pending_data = b""
         self.messages: list[bytes] = []
 
         self.responses: dict[int, LDAPResponse] = {}
+
+    def _wrap_response(self, payload: bytes) -> bytes:
+        if (
+            self.gssapi_authenticated and self.gssapi_security_context
+        ) and self.gssapi_security_layer in (
+            GSSAPISL.INTEGRITY_PROTECTION,
+            GSSAPISL.CONFIDENTIALITY,
+        ):
+            encrypt = self.gssapi_security_layer == GSSAPISL.CONFIDENTIALITY
+            wrap_data = self.gssapi_security_context.wrap(
+                payload, encrypt=encrypt
+            )
+            sasl_buffer_length = len(wrap_data.message).to_bytes(4, "big")
+
+            payload = sasl_buffer_length + wrap_data.message
+        return payload
 
     def send(self, msg: Sequence, unbind: bool = False) -> LDAPResponse:
         """Send LDAP message."""
@@ -466,13 +510,16 @@ class LDAPClientProtocol(asyncio.Protocol):
         if unbind:
             msg_id = -1
 
-        response = LDAPResponse(onfinish=lambda: self._remove_msg_id_response(msg_id))
+        response = LDAPResponse(
+            onfinish=lambda: self._remove_msg_id_response(msg_id)
+        )
         self.responses[msg_id] = response
 
         payload = encode(msg)
 
         logger.debug(f"Sending request id {msg_id}")
 
+        payload = self._wrap_response(payload)
         self.transport.write(payload)
 
         logger.debug(f"Sent request id {msg_id}")
@@ -484,6 +531,16 @@ class LDAPClientProtocol(asyncio.Protocol):
         """Remove msg from responses."""
         with suppress(KeyError):
             del self.responses[msg_id]
+
+    def _reset_gssapi_state(self, clear_buffers: bool = False) -> None:
+        self.gssapi_authenticated = False
+        self.gssapi_security_layer = None
+        self.gssapi_security_context = None
+
+        if clear_buffers:
+            self.unprocessed = b""
+            self.unwrapped_data = b""
+            self._pending_data = b""
 
     def connection_made(self, transport: asyncio.BaseTransport) -> None:
         """Set transport."""
@@ -499,19 +556,86 @@ class LDAPClientProtocol(asyncio.Protocol):
             return False
         return super().eof_received()  # type: ignore
 
-    def data_received(self, data: bytes) -> None:  # TODO: decompose
+    def _unwrap_request(self, data: bytes) -> bytes:
+        if self.gssapi_security_layer not in (
+            GSSAPISL.INTEGRITY_PROTECTION,
+            GSSAPISL.CONFIDENTIALITY,
+        ):
+            return data
+
+        if not self.gssapi_security_context:
+            logger.error("GSSAPI security context not found")
+            raise ConnectionAbortedError("GSSAPI security context not found")
+
+        result = b""
+        buffer = data
+
+        while len(buffer) >= 4:
+            sasl_buffer_length = int.from_bytes(buffer[:4], "big")
+
+            if sasl_buffer_length > 10 * 1024 * 1024:  # 10 MB
+                logger.error(
+                    f"Invalid sasl buffer length: {sasl_buffer_length}"
+                )
+                raise ConnectionAbortedError(
+                    f"Invalid SASL buffer length: {sasl_buffer_length}"
+                )
+
+            total_needed = 4 + sasl_buffer_length
+
+            if len(buffer) < total_needed:
+                self._pending_data = buffer
+                break
+
+            sasl_buffer = buffer[4:total_needed]
+            remaining = buffer[total_needed:]
+
+            try:
+                unwrap_data = self.gssapi_security_context.unwrap(sasl_buffer)
+                result += unwrap_data.message
+            except gssapi.exceptions.GSSError as e:
+                logger.error(f"GSSAPI unwrap failed at message: {e}")
+                raise ConnectionAbortedError(f"GSSAPI unwrap failed: {e}")
+
+            buffer = remaining
+
+        if buffer:
+            self._pending_data = buffer
+            logger.debug(f"Saved pending data: {len(buffer)} bytes")
+        else:
+            self._pending_data = b""
+
+        return result
+
+    def data_received(  # noqa: C901
+        self, data: bytes
+    ) -> None:  # TODO: decompose
         """Check if message is full."""
         logger.debug(f"data_received: len {len(data)}")
+
+        if self._pending_data:
+            data = self._pending_data + data
+            self._pending_data = b""
+
         self.unprocessed += data
 
         if len(data) <= 0:
             return
 
+        if self.gssapi_authenticated:
+            self.unwrapped_data += self._unwrap_request(data)
+            if self._pending_data:
+                return
+            self.unprocessed = copy(self.unwrapped_data)
+            self.unwrapped_data = b""
+
         length = BaseStrategy.compute_ldap_message_size(self.unprocessed)
         logger.debug(f"data_received: msg_length {length}")
 
         while len(self.unprocessed) >= length != -1:
-            logger.debug(f"data_received: appended msg, len: {len(self.unprocessed[:length])}")
+            logger.debug(
+                f"data_received: appended msg, len: {len(self.unprocessed[:length])}"  # noqa: E501
+            )
             self.messages.append(self.unprocessed[:length])
             self.unprocessed = self.unprocessed[length:]
 
@@ -524,7 +648,9 @@ class LDAPClientProtocol(asyncio.Protocol):
             try:
                 msg_asn = decode_message_fast(msg)
             except Exception as exc:
-                logger.warning(f"data_received: Caught exception whilst decoding message {exc}")
+                logger.warning(
+                    f"data_received: Caught exception whilst decoding message {exc}"  # noqa: E501
+                )
                 continue
             msg_id = msg_asn["messageID"]
             logger.debug(f"data_received: Decoded message, id {msg_id}")
@@ -542,7 +668,9 @@ class LDAPClientProtocol(asyncio.Protocol):
 
             elif msg_asn["protocolOp"] == 4:  # Search response, can be N,
                 is_list = True
-                msg_data = search_result_entry_response_to_dict_fast(msg_asn["payload"], None, None, False)
+                msg_data = search_result_entry_response_to_dict_fast(
+                    msg_asn["payload"], None, None, False
+                )
                 msg_log = f"data_received: id {msg_id}, search response"
 
             elif msg_asn["protocolOp"] == 5:  # Search result done
@@ -554,7 +682,10 @@ class LDAPClientProtocol(asyncio.Protocol):
                 if not controls:
                     controls = []
 
-                controls = [BaseStrategy.decode_control_fast(control[3]) for control in controls]
+                controls = [
+                    BaseStrategy.decode_control_fast(control[3])
+                    for control in controls
+                ]
                 msg_additional = {
                     "asn": msg_asn,
                     "controls": {item[0]: item[1] for item in controls},
@@ -579,7 +710,9 @@ class LDAPClientProtocol(asyncio.Protocol):
 
             elif msg_asn["protocolOp"] == 19:
                 msg_data = None
-                msg_refs = search_result_reference_response_to_dict_fast(msg_asn["payload"])
+                msg_refs = search_result_reference_response_to_dict_fast(
+                    msg_asn["payload"]
+                )
                 msg_log = f"data_received: id {msg_id}, refs response"
 
             elif msg_asn["protocolOp"] == 24:
@@ -621,9 +754,12 @@ class LDAPClientProtocol(asyncio.Protocol):
         logger.debug("Connection lost")
 
         self._is_bound = False
+        self._reset_gssapi_state(clear_buffers=True)
         for key, response in self.responses.items():
             if key != "unbind":
-                response.exception = ConnectionResetError("LDAP Server dropped the connection")
+                response.exception = ConnectionResetError(
+                    "LDAP Server dropped the connection"
+                )
             response.finished.set()
 
         if self._original_transport is not None:
@@ -669,7 +805,9 @@ class LDAPClientProtocol(asyncio.Protocol):
         """Create LDAP message."""
         ldap_message = LDAPMessage()
         ldap_message["messageID"] = MessageID(message_id)
-        ldap_message["protocolOp"] = ProtocolOp().setComponentByName(obj_name, obj)
+        ldap_message["protocolOp"] = ProtocolOp().setComponentByName(
+            obj_name, obj
+        )
 
         msg_controls = build_controls_list(controls)
         if msg_controls:
@@ -689,11 +827,24 @@ class LDAPConnection:
         server: Server,
         user: str | None = None,
         password: str | None = None,
+        sasl_mechanism: str | None = None,
+        sasl_cred_store: dict[bytes | str, bytes | str] | None = None,
+        sasl_cred_token: bytes | None = None,
+        sasl_security_layer: int | None = None,
         loop: asyncio.AbstractEventLoop | None = None,
+        sasl_max_buffer_size: int = 2048,
     ) -> None:
         """Set server, user and pw."""
         self._responses: dict[str, LDAPResponse] = {}
         self._msg_id = 0
+
+        self._sasl_in_progress = False
+        self._sasl_mechanism = sasl_mechanism
+        self._sasl_cred_store = sasl_cred_store
+        self._sasl_cred_token = sasl_cred_token
+        self._sasl_max_buffer_size = sasl_max_buffer_size
+        self._sasl_security_layer = sasl_security_layer
+
         self.loop = loop or asyncio.get_running_loop()
 
         self.server = server
@@ -719,8 +870,17 @@ class LDAPConnection:
         """Close conn."""
         self.close()
 
+    def _reset_gssapi_state(self, clear_buffers: bool = False) -> None:
+        self._sasl_in_progress = False
+        self._sasl_cred_token = None
+
+        if hasattr(self, "_proto"):
+            self._proto._reset_gssapi_state(clear_buffers=clear_buffers)
+
     def close(self) -> None:
         """Close conn."""
+        self._reset_gssapi_state(clear_buffers=True)
+
         if hasattr(self, "_proto"):
             with suppress(Exception):
                 if self._proto._original_transport:
@@ -764,6 +924,167 @@ class LDAPConnection:
             )
         else:
             self._socket, self._proto = await create_conn
+
+    async def sasl_bind(self) -> LDAPResponse:
+        """Perform SASL bind."""
+        if self._sasl_in_progress:
+            raise LDAPBindError("SASL bind already in progress")
+
+        logger.debug(f"start SASL BIND operation to {self.server.host}")
+        self._sasl_in_progress = True
+        try:
+            if self._sasl_mechanism == "GSSAPI":
+                result = await self.sasl_gssapi()
+            else:
+                raise LDAPBindError("Unsupported SASL mechanism")
+        finally:
+            self._sasl_in_progress = False
+
+        logger.debug(f"done SASL BIND operation to {self.server.host}")
+
+        return result
+
+    def _create_sasl_credentials(self) -> gssapi.Credentials:
+        if self._sasl_cred_token:
+            return gssapi.Credentials(token=self._sasl_cred_token)
+
+        if not self.bind_dn:
+            raise LDAPBindError(
+                "bind_dn must be set when using GSSAPI without cred_token"
+            )
+
+        return gssapi.Credentials(
+            name=gssapi.Name(self.bind_dn),
+            usage="initiate",
+            store=self._sasl_cred_store,
+        )
+
+    async def sasl_gssapi(self) -> LDAPResponse:
+        """Perform SASL GSSAPI bind using the Kerberos v5 mechanism."""
+        target_name = gssapi.Name(
+            "ldap@" + self.server.host, gssapi.NameType.hostbased_service
+        )
+        creds = self._create_sasl_credentials()
+
+        ctx = gssapi.SecurityContext(
+            name=target_name,
+            mech=gssapi.MechType.kerberos,
+            creds=creds,
+        )
+
+        self._proto.gssapi_security_context = ctx
+
+        self._msg_id = 0
+
+        in_token = None
+        try:
+            while True:
+                logger.debug("Sending SASL token")
+                out_token = ctx.step(in_token)
+                if out_token is None:
+                    out_token = b""
+                result = await self.send_sasl_negotiation(out_token)
+                in_token = result.data["saslCreds"]
+                try:
+                    if ctx.complete:
+                        break
+                except gssapi.exceptions.MissingContextError:
+                    pass
+
+            unwrapped_token = ctx.unwrap(in_token)
+            final_message = self.process_end_token(unwrapped_token.message)
+
+            out_token = ctx.wrap(final_message, False)
+            return await self.send_sasl_negotiation(out_token.message)
+        except gssapi.exceptions.GSSError as exc:
+            with suppress(Exception):
+                await self.abort_sasl_negotiation()
+            self._reset_gssapi_state(clear_buffers=True)
+            raise LDAPBindError(f"LDAP GSSAPI error: {exc}") from exc
+        except Exception:
+            self._reset_gssapi_state(clear_buffers=True)
+            raise
+
+    async def abort_sasl_negotiation(self) -> None:
+        """Abort the SASL negotiation."""
+        bind_req = bind_operation(
+            version=self.server.version,
+            authentication="SASL",
+            name=None,
+            password=None,
+            sasl_mechanism="",
+            sasl_credentials=None,
+        )
+
+        ldap_msg = LDAPClientProtocol.encapsulate_ldap_message(
+            self._next_msg_id, "bindRequest", bind_req
+        )
+
+        resp = self._proto.send(ldap_msg)
+
+        await resp.wait()
+
+    async def send_sasl_negotiation(self, payload: bytes) -> LDAPResponse:
+        """Send SASL negotiation data to the server."""
+        bind_req = bind_operation(
+            version=self.server.version,
+            authentication="SASL",
+            name=None,
+            password=None,
+            sasl_mechanism="GSSAPI",
+            sasl_credentials=payload,
+        )
+
+        # Generate ASN1 form of LDAP bind request
+        ldap_msg = LDAPClientProtocol.encapsulate_ldap_message(
+            self._next_msg_id, "bindRequest", bind_req
+        )
+
+        resp = self._proto.send(ldap_msg)
+        await resp.wait()
+
+        return resp
+
+    def _select_security_layer(self, server_sl: int) -> GSSAPISL:
+        if self.server.use_ssl:
+            return GSSAPISL.NO_SECURITY
+
+        if self._sasl_security_layer is not None:
+            if server_sl & self._sasl_security_layer:
+                return GSSAPISL(self._sasl_security_layer)
+            else:
+                raise LDAPBindError(
+                    "Server does not support the requested security layer"
+                )
+
+        if server_sl & GSSAPISL.CONFIDENTIALITY:
+            return GSSAPISL.CONFIDENTIALITY
+        elif server_sl & GSSAPISL.INTEGRITY_PROTECTION:
+            return GSSAPISL.INTEGRITY_PROTECTION
+        else:
+            return GSSAPISL.NO_SECURITY
+
+    def process_end_token(self, token: bytes) -> bytes:
+        """Process the response we got at the end of our SASL negotiation."""
+        if len(token) != 4:
+            raise LDAPBindError("Incorrect token length")
+
+        server_security_layer = token[0]
+        if server_security_layer in (0, 1) and token[1:] != b"\x00\x00\x00":
+            raise LDAPBindError(
+                "Server max buffer size must be 0 if no security layer"
+            )
+
+        self._proto.gssapi_security_layer = self._select_security_layer(
+            server_security_layer
+        )
+
+        message = (
+            self._proto.gssapi_security_layer.to_bytes()
+            + self._sasl_max_buffer_size.to_bytes(length=3)
+        )
+
+        return message
 
     async def bind(
         self,
@@ -809,9 +1130,11 @@ class LDAPConnection:
             bind_req = BindRequest()
             bind_req["version"] = Version(3)
             bind_req["name"] = bind_dn
-            bind_req["authentication"] = AuthenticationChoice().setComponentByName(
-                "simple",
-                Simple(bind_pw),
+            bind_req["authentication"] = (
+                AuthenticationChoice().setComponentByName(
+                    "simple",
+                    Simple(bind_pw),
+                )
             )
 
         elif method == "NTLM":
@@ -826,9 +1149,11 @@ class LDAPConnection:
                 ntlm_client,
             )
 
-        elif method == "SASL":
+        elif method == "SASL" and self._sasl_mechanism == "PLAIN":
             if not sasl_credentials:
-                raise LDAPBindError("SASL credentials must be provided for SASL authentication")
+                raise LDAPBindError(
+                    "SASL credentials must be provided for SASL authentication"
+                )
 
             bind_req = BindRequest()
             bind_req["version"] = Version(3)
@@ -839,11 +1164,23 @@ class LDAPConnection:
             sasl_creds["mechanism"] = sasl_credentials.sasl_mechanism
             sasl_creds["credentials"] = sasl_credentials.encode()
 
-            bind_req["authentication"] = AuthenticationChoice().setComponentByName(
-                "sasl",
-                sasl_creds,
+            bind_req["authentication"] = (
+                AuthenticationChoice().setComponentByName(
+                    "sasl",
+                    sasl_creds,
+                )
             )
 
+        elif method == "SASL" and self._sasl_mechanism == "GSSAPI":
+            resp = await self.sasl_bind()
+
+            if resp.data["result"] != 0:
+                self._reset_gssapi_state(clear_buffers=True)
+                raise LDAPBindError("Invalid Credentials")
+
+            self._proto.gssapi_authenticated = True
+            self._proto.is_bound = True
+            return
         else:
             raise LDAPBindError("Unsupported Authentication Method")
 
@@ -854,7 +1191,9 @@ class LDAPConnection:
         msg_id = self._next_msg_id
 
         # Generate ASN1 form of LDAP bind request
-        ldap_msg = LDAPClientProtocol.encapsulate_ldap_message(msg_id, "bindRequest", bind_req)
+        ldap_msg = LDAPClientProtocol.encapsulate_ldap_message(
+            msg_id, "bindRequest", bind_req
+        )
 
         # Send request to LDAP server, as multiple LDAP queries
         # can run simultaneously, were given an object to wait on
@@ -969,7 +1308,9 @@ class LDAPConnection:
             await resp.wait()
 
         try:
-            cookie = resp.additional["controls"]["1.2.840.113556.1.4.319"]["value"]["cookie"]
+            cookie = resp.additional["controls"]["1.2.840.113556.1.4.319"][
+                "value"
+            ]["cookie"]
         except KeyError:
             cookie = None
 
@@ -1065,6 +1406,7 @@ class LDAPConnection:
         no msg_id, therefore we tell send() its a special case.
         """
         if not self.is_bound:
+            self._reset_gssapi_state(clear_buffers=True)
             return  # Exit quickly if were already unbound
 
         # Create unbind request
@@ -1074,15 +1416,20 @@ class LDAPConnection:
         self._unbind_in_progress = True
 
         # Generate final LDAP ASN message
-        ldap_msg = LDAPClientProtocol.encapsulate_ldap_message(msg_id, "unbindRequest", unbind_req)
+        ldap_msg = LDAPClientProtocol.encapsulate_ldap_message(
+            msg_id, "unbindRequest", unbind_req
+        )
         resp = self._proto.send(ldap_msg, unbind=True)
 
         # Unbind is a special case, we dont get a response
         with suppress(asyncio.TimeoutError):
             await asyncio.wait_for(resp.wait(), timeout=0)
 
+        self._reset_gssapi_state(clear_buffers=True)
         # Cleanup transport and protocol
-        if not (self._proto.transport is None or self._proto.transport.is_closing()):
+        if not (
+            self._proto.transport is None or self._proto.transport.is_closing()
+        ):
             del self._proto
 
     async def start_tls(
@@ -1096,7 +1443,7 @@ class LDAPConnection:
         :param timeout: Optional timeout in seconds.
         :raises LDAPStartTlsError: On TLS related errors or connection timeout.
         """
-        if hasattr(self, "_proto") or self._proto.transport.is_closing():
+        if not hasattr(self, "_proto") or self._proto.transport.is_closing():
             await self._create_connection(timeout)
 
         # Get SSL context from server obj, if
@@ -1105,9 +1452,16 @@ class LDAPConnection:
         resp = await self.extended("1.3.6.1.4.1.1466.20037")
 
         if resp.data["description"] != "success":
-            raise LDAPStartTlsError("Server doesnt want us to use TLS. {}".format(resp.data.get("message")))
+            raise LDAPStartTlsError(
+                "Server doesnt want us to use TLS. {}".format(
+                    resp.data.get("message")
+                )
+            )
 
-        await self._proto.start_tls(ctx or cast("ssl.SSLContext", self.server.ssl_context))
+        await self._proto.start_tls(
+            ctx or cast("ssl.SSLContext", self.server.ssl_context)
+        )
+        self.server.use_ssl = True
 
     async def extended(
         self,
@@ -1118,11 +1472,15 @@ class LDAPConnection:
     ) -> Any:
         """Perform an extended operation."""
         # Create unbind request
-        extended_req = extended_operation(request_name, request_value, no_encode=no_encode)
+        extended_req = extended_operation(
+            request_name, request_value, no_encode=no_encode
+        )
         msg_id = self._next_msg_id
 
         # Generate final LDAP ASN message
-        ldap_msg = LDAPClientProtocol.encapsulate_ldap_message(msg_id, "extendedReq", extended_req, controls=controls)
+        ldap_msg = LDAPClientProtocol.encapsulate_ldap_message(
+            msg_id, "extendedReq", extended_req, controls=controls
+        )
 
         resp = self._proto.send(ldap_msg)
         await resp.wait()
@@ -1155,11 +1513,15 @@ class LDAPConnection:
         if not changes:
             raise LDAPChangeError("Changes dict cannot be empty")
 
-        modify_req = modify_operation(dn, changes, auto_encode, None, validator=None, check_names=False)
+        modify_req = modify_operation(
+            dn, changes, auto_encode, None, validator=None, check_names=False
+        )
         msg_id = self._next_msg_id
 
         # Generate final LDAP ASN message
-        ldap_msg = LDAPClientProtocol.encapsulate_ldap_message(msg_id, "modifyRequest", modify_req, controls=controls)
+        ldap_msg = LDAPClientProtocol.encapsulate_ldap_message(
+            msg_id, "modifyRequest", modify_req, controls=controls
+        )
 
         resp = self._proto.send(ldap_msg)
         await resp.wait()
@@ -1187,12 +1549,16 @@ class LDAPConnection:
         msg_id = self._next_msg_id
 
         # Generate final LDAP ASN message
-        ldap_msg = LDAPClientProtocol.encapsulate_ldap_message(msg_id, "delRequest", del_req, controls=controls)
+        ldap_msg = LDAPClientProtocol.encapsulate_ldap_message(
+            msg_id, "delRequest", del_req, controls=controls
+        )
 
         resp = self._proto.send(ldap_msg)
         await resp.wait()
 
-        if resp.data["result"] != 0 and not (ignore_no_exist and resp.data["result"] == 32):
+        if resp.data["result"] != 0 and not (
+            ignore_no_exist and resp.data["result"] == 32
+        ):
             raise LDAPDeleteError(
                 "Failed to modify dn {}. Msg {} {} {}".format(
                     dn,
@@ -1255,7 +1621,9 @@ class LDAPConnection:
         # and any we've found in attributes.
         # Converts objectclass to unicode
         # in case of bytes value, also removes dupes
-        attr_object_class = list({to_unicode(object_class) for object_class in attr_object_class})
+        attr_object_class = list(
+            {to_unicode(object_class) for object_class in attr_object_class}
+        )
         _attributes[object_class_attr_name] = attr_object_class
 
         add_request = add_operation(
@@ -1360,7 +1728,9 @@ class LDAPConnection:
 
         request_value.setComponentByName("newPasswd", new_password)
 
-        psw_change_oid: Literal["1.3.6.1.4.1.4203.1.11.1"] = "1.3.6.1.4.1.4203.1.11.1"
+        psw_change_oid: Literal["1.3.6.1.4.1.4203.1.11.1"] = (
+            "1.3.6.1.4.1.4203.1.11.1"
+        )
 
         logger.debug(f"Attempting to modify password for user: {user_dn}")
 
